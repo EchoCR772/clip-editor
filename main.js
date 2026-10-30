@@ -1604,6 +1604,7 @@ ipcMain.handle('settings-get', wrap(async () => {
     discordIdDetected: s.discordId || null, discordIdManual: s.discordIdManual || null,
     folders: await libFolders(), detected: await detectedFolders(), custom: Array.isArray(s.folders),
     cache: dirSize(thumbDir()),
+    updateMode: updateMode(), updates: !!updater,
   };
 }));
 ipcMain.handle('settings-set', wrap(async (_e, patch) => {
@@ -1613,7 +1614,12 @@ ipcMain.handle('settings-set', wrap(async (_e, patch) => {
     if (v && !/^\d{15,22}$/.test(v)) throw new Error("That doesn't look like a Discord user ID (15-22 digits).");
     if (v) s.discordIdManual = v; else delete s.discordIdManual;
   }
+  if (patch && UPDATE_MODES.includes(patch.updateMode)) s.updateMode = patch.updateMode;
   writeSettings(s);
+  if (patch && patch.updateMode) {
+    sendUpdate();
+    if (patch.updateMode === 'auto') downloadUpdate();
+  }
   return {};
 }));
 ipcMain.handle('thumbs-clear', wrap(async () => {
@@ -1633,29 +1639,44 @@ ipcMain.handle('lib-reset-folders', wrap(async () => {
 }));
 
 // ---------- updates (from the GitHub releases) ----------
-// Checks a few seconds after start and every 4 hours, downloads in the background, and tells the
-// window when an update is ready; it's installed on the next restart (or right away from the button).
-const upd = { state: 'idle', version: null, notes: null, progress: 0, error: null };
+// Settings > Updates picks how: 'ask' (default: check, show what's new, download when asked),
+// 'auto' (download in the background, install on the next restart) or 'off' (only Help > Check for
+// Updates). Checks a few seconds after start and every 4 hours.
+const upd = { state: 'idle', version: null, notes: null, size: 0, progress: 0, error: null, later: false };
 let updater = null;
-function sendUpdate() { if (win && !win.isDestroyed()) win.webContents.send('update', upd); }
+const UPDATE_MODES = ['ask', 'auto', 'off'];
+const updateMode = () => (UPDATE_MODES.includes(readSettings().updateMode) ? readSettings().updateMode : 'ask');
+function sendUpdate() { if (win && !win.isDestroyed()) win.webContents.send('update', { ...upd, mode: updateMode() }); }
+const setUpd = patch => { Object.assign(upd, patch); sendUpdate(); };
+const notesText = n => (typeof n === 'string' ? n : Array.isArray(n) ? n.map(x => x.note || '').join('\n') : '');
+function downloadUpdate() {
+  if (!updater || upd.state !== 'available') return;
+  setUpd({ state: 'downloading', progress: 0, later: false });
+  updater.downloadUpdate().catch(e => setUpd({ state: 'error', error: String(e && e.message || e).split('\n')[0] }));
+}
 function setupUpdates() {
   if (!app.isPackaged || process.env.CLIP_TRIMMER_LIBRARY) return; // dev runs and tests don't update
   try { updater = require('electron-updater').autoUpdater; } catch (e) { return; }
-  updater.autoDownload = true;
-  updater.autoInstallOnAppQuit = true;
-  const set = patch => { Object.assign(upd, patch); sendUpdate(); };
-  updater.on('checking-for-update', () => set({ state: 'checking', error: null }));
-  updater.on('update-not-available', () => set({ state: 'none' }));
-  updater.on('update-available', i => set({ state: 'downloading', version: i.version, progress: 0 }));
-  updater.on('download-progress', p => set({ progress: Math.round(p.percent || 0) }));
-  updater.on('update-downloaded', i => {
-    const notes = typeof i.releaseNotes === 'string' ? i.releaseNotes : Array.isArray(i.releaseNotes) ? i.releaseNotes.map(n => n.note).join('\n') : '';
-    // shown once after the restart
-    const s = readSettings(); s.whatsNew = { version: i.version, notes }; writeSettings(s);
-    set({ state: 'ready', version: i.version, notes });
+  updater.autoDownload = false;          // downloads start from downloadUpdate() (right away in 'auto')
+  updater.autoInstallOnAppQuit = true;   // only does something once an update is downloaded
+  updater.fullChangelog = true;
+  updater.on('checking-for-update', () => setUpd({ state: 'checking', error: null }));
+  updater.on('update-not-available', () => setUpd({ state: 'none' }));
+  updater.on('update-available', i => {
+    const size = (i.files || []).reduce((n, f) => Math.max(n, f.size || 0), 0);
+    setUpd({ state: 'available', version: i.version, notes: notesText(i.releaseNotes), size, later: readSettings().updateLater === i.version });
+    if (updateMode() === 'auto') downloadUpdate();
   });
-  updater.on('error', e => set({ state: 'error', error: String(e && e.message || e).split('\n')[0] }));
-  const check = () => { if (upd.state !== 'downloading' && upd.state !== 'ready') updater.checkForUpdates().catch(() => {}); };
+  updater.on('download-progress', p => setUpd({ progress: Math.round(p.percent || 0) }));
+  updater.on('update-downloaded', i => {
+    const s = readSettings(); s.whatsNew = { version: i.version, notes: notesText(i.releaseNotes) }; delete s.updateLater; writeSettings(s);
+    setUpd({ state: 'ready', version: i.version, later: false });
+  });
+  updater.on('error', e => setUpd({ state: 'error', error: String(e && e.message || e).split('\n')[0] }));
+  const check = () => {
+    if (updateMode() === 'off' || ['checking', 'downloading', 'ready'].includes(upd.state)) return;
+    updater.checkForUpdates().catch(() => {});
+  };
   setTimeout(check, 8000);
   setInterval(check, 4 * 3600 * 1000);
 }
@@ -1663,11 +1684,19 @@ function setupUpdates() {
 ipcMain.handle('open-url', (_e, url) => {
   if (typeof url === 'string' && /^https:\/\/(github\.com|ffmpeg\.org)\//.test(url)) shell.openExternal(url);
 });
-ipcMain.handle('update-get', () => ({ ...upd, current: app.getVersion(), enabled: !!updater }));
+ipcMain.handle('update-get', () => ({ ...upd, mode: updateMode(), current: app.getVersion(), enabled: !!updater }));
 ipcMain.handle('update-check', async () => {
   if (!updater) return { ...upd, enabled: false };
+  if (['downloading', 'ready'].includes(upd.state)) { sendUpdate(); return upd; }
   try { await updater.checkForUpdates(); } catch (e) { /* reported through 'error' */ }
   return upd;
+});
+ipcMain.handle('update-download', () => downloadUpdate());
+// "Later": keep the button but make it quiet, also after a restart, until a newer version shows up
+ipcMain.handle('update-later', () => {
+  if (!upd.version) return;
+  const s = readSettings(); s.updateLater = upd.version; writeSettings(s);
+  setUpd({ later: true });
 });
 ipcMain.handle('update-install', () => { if (updater && upd.state === 'ready') setImmediate(() => updater.quitAndInstall(true, true)); });
 // what's new: the notes of the version that was just installed, shown once
@@ -1677,6 +1706,22 @@ ipcMain.handle('whats-new', () => {
   delete s.whatsNew; writeSettings(s);
   return w;
 });
+// The changelog: every published release's notes (Markdown) from GitHub, newest first.
+// Kept for 10 minutes; on failure the caller falls back to the notes the updater brought.
+let changelogCache = null;
+ipcMain.handle('changelog', wrap(async () => {
+  if (changelogCache && Date.now() - changelogCache.at < 10 * 60 * 1000) return { releases: changelogCache.list };
+  const pub = ((require('./package.json').build || {}).publish || [])[0] || {};
+  if (!pub.owner || !pub.repo) throw new Error('No release page set up.');
+  const r = await net.fetch(`https://api.github.com/repos/${pub.owner}/${pub.repo}/releases?per_page=50`, {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Clip-Editor' }, signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error(`GitHub said ${r.status}.`);
+  const list = (await r.json()).filter(x => !x.draft && !x.prerelease)
+    .map(x => ({ version: String(x.tag_name || '').replace(/^v/, ''), date: x.published_at, notes: x.body || '' }));
+  changelogCache = { at: Date.now(), list };
+  return { releases: list };
+}));
 
 // ---------- window / lifecycle ----------
 

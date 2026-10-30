@@ -60,22 +60,30 @@ let appVersion = '';
 T.settingsGet().then(r => { if (r.ok) appVersion = r.version; });
 // every shortcut, in a dialog like Discord's
 // ---------- updates ----------
-// A green button in the title bar once a new version is downloaded (like Discord's); one click
-// restarts into it. Help > Check for Updates checks right away.
+// Ask first (default): a soft "Update available" button in the title bar opens what's new with
+// Download / Later. Later turns it into a quiet icon. Once downloaded: "Restart to update".
+// Automatic: downloads in the background and only shows "Restart to update". Off: Help > Check only.
 let upd = { state: 'idle' };
+const VER = v => String(v || '').split('.').map(n => parseInt(n, 10) || 0);
+const newerThan = (a, b) => { const x = VER(a), y = VER(b); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 function showUpdate(u) {
   upd = u || upd;
-  const b = $('updbtn');
-  b.hidden = upd.state !== 'ready';
-  if (upd.state === 'ready') { $('updtext').textContent = 'Update ready'; b.dataset.tip = `Restart to update to ${upd.version}`; }
+  const b = $('updbtn'), t = $('updtext');
+  const ask = upd.state === 'available', dl = upd.state === 'downloading' && upd.mode !== 'auto', ready = upd.state === 'ready';
+  b.hidden = !(ask || dl || ready);
+  b.classList.toggle('quiet', ask && !!upd.later);
+  if (ask) { t.textContent = upd.later ? '' : 'Update available'; b.dataset.tip = upd.later ? `Update ${upd.version} available` : `See what's new in ${upd.version}`; }
+  else if (dl) { t.textContent = `Downloading ${upd.progress || 0}%`; b.dataset.tip = `Downloading ${upd.version}`; }
+  else if (ready) { t.textContent = 'Restart to update'; b.dataset.tip = `Restart into ${upd.version}`; }
 }
 T.onUpdate(u => {
   const was = upd.state;
   showUpdate(u);
   if (checkingByHand && was === 'checking') {
-    if (u.state === 'none') { checkingByHand = false; libToast(`You're on the latest version (${appVersion}).`); }
-    else if (u.state === 'downloading') { checkingByHand = false; libToast(`Downloading ${u.version}... it'll be ready in a moment.`); }
-    else if (u.state === 'error') { checkingByHand = false; libToast("Couldn't check for updates: " + u.error, 'err'); }
+    checkingByHand = false;
+    if (u.state === 'none') libToast(`You're on the latest version (${appVersion}).`);
+    else if (u.state === 'available') updateBox();
+    else if (u.state === 'error') libToast("Couldn't check for updates: " + u.error, 'err');
   }
 });
 T.updateGet().then(showUpdate);
@@ -83,12 +91,100 @@ let checkingByHand = false;
 async function checkUpdates() {
   const u = await T.updateGet();
   if (!u.enabled) { libToast('Updates are checked in the installed app.'); return; }
+  if (u.state === 'available') { updateBox(); return; }
+  if (u.state === 'ready') { libToast(`${u.version} is ready. Restart to update.`); return; }
   checkingByHand = true;
   T.updateCheck();
 }
-$('updbtn').onclick = () => T.updateInstall();
+$('updbtn').onclick = () => {
+  if (upd.state === 'ready') T.updateInstall();
+  else if (upd.state === 'available') updateBox();
+};
+
+// Release notes are short Markdown (headings, "- " lists, **bold**, `code`); turned into elements, never HTML.
+function mdNodes(text) {
+  const out = []; let list = null;
+  const inline = str => {
+    const e = h('p');
+    for (const part of String(str).split(/(\*\*[^*]+\*\*|`[^`]+`)/)) {
+      if (!part) continue;
+      if (/^\*\*.+\*\*$/.test(part)) e.append(h('strong', '', part.slice(2, -2)));
+      else if (/^`.+`$/.test(part)) e.append(h('code', '', part.slice(1, -1)));
+      else e.append(document.createTextNode(part));
+    }
+    return e;
+  };
+  for (const raw of String(text || '').replace(/\r/g, '').replace(/<[^>]+>/g, '').split('\n')) {
+    const line = raw.trim();
+    if (!line) { list = null; continue; }
+    const m = line.match(/^#{1,6}\s+(.*)$/);
+    if (m) { list = null; out.push(h('h4', '', m[1])); continue; }
+    const li = line.match(/^[-*•]\s+(.*)$/);
+    if (li) {
+      if (!list) { list = h('ul', 'notes'); out.push(list); }
+      const item = h('li'); item.append(...inline(li[1]).childNodes); list.append(item); continue;
+    }
+    list = null; out.push(inline(line));
+  }
+  return out.length ? out : [h('p', '', 'Bug fixes and improvements.')];
+}
+// one release's notes under its version and date
+function releaseNodes(r) {
+  const head = h('h3', 'relhead', r.version);
+  if (r.date) head.append(h('small', '', new Date(r.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })));
+  return [head, ...mdNodes(r.notes)];
+}
+// The notes for versions after `from` up to `to` (both optional), newest first. Falls back to the
+// notes the updater brought when GitHub can't be reached.
+async function releasesBetween(from, to, fallback) {
+  const r = await T.changelog().catch(() => ({ ok: false }));
+  if (r && r.ok && r.releases.length) {
+    return r.releases.filter(x => (!from || newerThan(x.version, from)) && (!to || !newerThan(x.version, to)));
+  }
+  return fallback ? [{ version: fallback.version, notes: fallback.notes }] : null;
+}
+// "Update available": what's new since your version, the size, Download / Later
+async function updateBox() {
+  if (document.querySelector('.modal.upd')) return;
+  hideMenu(); hideTip();
+  const ov = h('div', 'modal-ov'), box = h('div', 'modal wide upd');
+  const x = h('button', 'modal-x'); x.append(icoSpan('x'));
+  const sub = h('div', 'updsub', `Version ${upd.version}${upd.size ? '  ·  ' + fmtSize(upd.size) : ''}  ·  you have ${appVersion}`);
+  const body = h('div', 'modal-body updnotes');
+  body.append(h('p', '', 'Loading the changelog...'));
+  const row = h('div', 'modal-btns');
+  const later = h('button', 'mbtn', 'Later'), go = h('button', 'mbtn primary', 'Download');
+  row.append(later, go);
+  box.append(x, h('h2', '', 'Update available'), sub, body, row);
+  ov.append(box); document.body.append(ov);
+  requestAnimationFrame(() => ov.classList.add('on'));
+  const done = () => { document.removeEventListener('keydown', key, true); ov.classList.remove('on'); setTimeout(() => ov.remove(), 160); };
+  const key = e => { e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); later.click(); } else if (e.key === 'Enter') { e.preventDefault(); go.click(); } };
+  document.addEventListener('keydown', key, true);
+  x.onclick = () => later.click();
+  ov.addEventListener('pointerdown', e => { if (e.target === ov && e.button === 0) later.click(); });
+  later.onclick = () => { done(); if (!upd.later) T.updateLater(); };
+  go.onclick = () => { done(); T.updateDownload(); };
+  const list = await releasesBetween(appVersion, upd.version, upd);
+  body.replaceChildren(...(list && list.length ? list.flatMap(releaseNodes) : mdNodes(upd.notes)));
+}
+// Help > Changelog: every version's notes
+async function changelogBox() {
+  infoBox('Changelog', [h('p', '', 'Loading...')]);
+  const body = document.querySelector('.modal-ov:last-child .modal-body');
+  const list = await releasesBetween(null, null, null);
+  if (!body || !body.isConnected) return;
+  if (!list) { body.replaceChildren(h('p', '', "Couldn't reach GitHub. "), (() => { const a = h('button', 'linkbtn', 'Open the releases page'); a.onclick = () => T.openUrl('https://github.com/EchoCR772/clip-editor/releases'); return a; })()); return; }
+  body.replaceChildren(...list.flatMap(r => releaseNodes(r)));
+  body.classList.add('updnotes');
+}
 // after an update: what changed, once
-T.whatsNew().then(w => { if (w) infoBox(`What's new in ${w.version}`, w.notes || 'Bug fixes and improvements.'); });
+T.whatsNew().then(async w => {
+  if (!w) return;
+  const list = await releasesBetween(null, w.version, w);
+  const mine = list && list.find(r => r.version === w.version);
+  infoBox(`What's new in ${w.version}`, mdNodes(mine ? mine.notes : w.notes));
+});
 
 // a simple dialog with a title and text (or nodes)
 function infoBox(title, body) {
@@ -96,8 +192,7 @@ function infoBox(title, body) {
   const ov = h('div', 'modal-ov'), box = h('div', 'modal wide');
   const x = h('button', 'modal-x'); x.append(icoSpan('x'));
   const content = h('div', 'modal-body');
-  if (typeof body === 'string') { for (const line of body.replace(/<[^>]+>/g, '').split(/\n+/).filter(Boolean)) content.append(h('p', '', line.replace(/^[-*]\s*/, '• '))); }
-  else content.append(...body);
+  content.append(...(typeof body === 'string' ? mdNodes(body) : body));
   box.append(x, h('h2', '', title), content);
   ov.append(box); document.body.append(ov);
   requestAnimationFrame(() => ov.classList.add('on'));
@@ -192,7 +287,9 @@ $('appmenu').onclick = e => {
       { text: 'Keyboard Shortcuts', hint: 'Ctrl+/', run: shortcutsBox },
       '-',
       upd.state === 'ready' ? { text: `Restart to Update (${upd.version})`, run: () => T.updateInstall() }
+        : upd.state === 'available' ? { text: `Update to ${upd.version}...`, run: updateBox }
         : { text: upd.state === 'downloading' ? `Downloading Update... ${upd.progress || 0}%` : 'Check for Updates...', run: checkUpdates, disabled: upd.state === 'downloading' || upd.state === 'checking' },
+      { text: 'Changelog', run: changelogBox },
       { text: `About ${T.appName}`, run: aboutBox },
     ] },
   ]);
@@ -347,11 +444,17 @@ function renderFolders() {
     };
     box.append(row);
   }
-  if (!live.length) {
-    const b = h('button', 'linkbtn', 'Add a clips folder in Settings');
-    b.onclick = () => openSettings();
-    box.append(b);
-  }
+  // add another folder (OBS, SteelSeries, anything) right here
+  const add = h('button', 'frow fadd');
+  const plus = h('span', 'fplus'); plus.append(icoSpan('plus'));
+  add.append(h('span', 'fspace'), plus, h('span', 'fname', 'Add folder'));
+  add.title = 'Add a folder with clips';
+  add.onclick = async () => {
+    const x = await T.libAddFolder();
+    if (!x.ok) libToast(x.error, 'err');
+    else if (x.changed) { L.dirty = true; loadLibrary(); libToast('Folder added.'); }
+  };
+  box.append(add);
   const all = live.length && chosen.length === live.length;
   $('foldertext').textContent = !live.length ? 'No folders' : all ? 'All folders'
     : chosen.length <= 2 ? chosen.map(p => srcLabel(live.find(f => samePathR(f.path, p)))).join(', ') : `${chosen.length} folders`;
@@ -1415,6 +1518,28 @@ async function renderSettings() {
   }
   card.append(row);
   ds.append(card);
+
+  // updates
+  const us = section('Updates', 'New versions come from the GitHub releases page.');
+  const uc = h('div', 'setcard');
+  const modes = [['ask', 'Ask first', 'Tells you when there is an update and shows what changed. Nothing downloads until you click Download.'],
+    ['auto', 'Automatic', 'Downloads updates in the background and installs them the next time the app restarts.'],
+    ['off', 'Off', "Doesn't check by itself. Use Help > Check for Updates."]];
+  for (const [id, name, note] of modes) {
+    const row = h('button', 'setrow setopt' + (r.updateMode === id ? ' on' : ''));
+    const dot = h('span', 'radio');
+    const t = h('div', 'settext'); t.append(h('div', 'setname', name), h('div', 'setpath wrap', note));
+    row.append(dot, t);
+    row.onclick = async () => { if (r.updateMode === id) return; await T.settingsSet({ updateMode: id }); renderSettings(); };
+    uc.append(row);
+  }
+  const vrow = h('div', 'setrow');
+  vrow.append(h('div', 'settext', `Version ${r.version}`));
+  const chk = h('button', 'btn sm ghost', 'Check now'); chk.onclick = () => { closeSettings(); checkUpdates(); };
+  const log = h('button', 'btn sm ghost', 'Changelog'); log.onclick = () => changelogBox();
+  vrow.append(chk, log);
+  uc.append(vrow);
+  us.append(uc);
 
   // thumbnails
   const ts = section('Thumbnails', 'Previews for the library are saved so they load instantly. Clearing them is safe; they get made again as you scroll.');

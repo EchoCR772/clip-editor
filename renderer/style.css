@@ -698,11 +698,40 @@ button:focus-visible,.clip:focus-visible{outline:2px solid var(--acc);outline-of
 #ctxsub .mcheck{width:15px;height:15px;color:#fff;margin-left:-4px}
 #ctxsub button:disabled span{color:#6b6a70}
 /* "Update ready" in the title bar, like Discord's green download arrow */
-.tb-upd{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 8px;margin-right:6px;border:0;border-radius:7px;background:#23a55a;color:#fff;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;-webkit-app-region:no-drag;flex:none}
-.tb-upd:hover{background:#1f9150}
+.tb-upd{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 8px;margin-right:6px;border:0;border-radius:7px;background:rgba(35,165,90,.16);color:#7fd8a1;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;-webkit-app-region:no-drag;flex:none;position:relative;transition:background .15s ease,color .15s ease}
+.tb-upd:hover{background:rgba(35,165,90,.26);color:#a6e6bf}
 .tb-upd[hidden]{display:none}
+/* after "Later": just an icon with a small dot */
+.tb-upd.quiet{background:transparent;color:var(--mute);padding:0;width:32px;justify-content:center}
+.tb-upd.quiet:hover{background:#1c1b20;color:var(--text)}
+.tb-upd.quiet #updtext{display:none}
+.tb-upd.quiet::after{content:'';position:absolute;top:5px;right:6px;width:7px;height:7px;border-radius:50%;background:#3ba55c;box-shadow:0 0 0 2px #0a090c}
 .tb-upd .ico{width:16px;height:16px}
 .modal-body{max-height:55vh;overflow-y:auto;color:var(--mute);font-size:14px;line-height:1.45}
 .modal-body p{margin:0 0 10px;user-select:text}
 .modal-body h3{color:#fff;font-size:14px;margin:16px 0 8px}
 .modal-body .linkbtn{font-size:14px;padding:0}
+
+/* update dialog and changelog */
+.updsub{color:var(--dim);font-size:13px;margin:-2px 0 14px}
+.modal.upd .modal-body{margin-bottom:18px;max-height:45vh}
+.updnotes h3.relhead{display:flex;align-items:baseline;gap:8px;margin:14px 0 6px;font-size:15px}
+.updnotes h3.relhead:first-child{margin-top:0}
+.updnotes h3.relhead small{color:var(--dim);font-size:12px;font-weight:500}
+.updnotes h4{color:var(--text);font-size:13.5px;margin:10px 0 4px}
+.modal-body ul.notes{margin:0 0 10px;padding-left:18px}
+.modal-body ul.notes li{margin:3px 0}
+.modal-body code{background:#26252b;border-radius:4px;padding:1px 5px;font-size:12.5px}
+/* settings: one-of-three choice rows */
+.setopt{width:100%;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;gap:12px}
+.setopt:hover{background:#1c1b20}
+.radio{width:18px;height:18px;border-radius:50%;border:2px solid #4a4950;flex:none;position:relative;transition:border-color .12s ease}
+.setopt.on .radio{border-color:var(--acc)}
+.setopt.on .radio::after{content:'';position:absolute;inset:3px;border-radius:50%;background:var(--acc)}
+/* folders panel: Add folder row */
+.fadd{color:var(--mute)}
+.fadd .fspace{width:18px;flex:none}
+.fplus{width:26px;height:26px;border-radius:6px;background:#1c1b20;color:var(--mute);display:flex;align-items:center;justify-content:center;flex:none;transition:background .15s ease,color .15s ease}
+.fplus .ico{width:15px;height:15px}
+.fadd:hover .fplus{background:#23a55a;color:#fff}
+.tb-upd:focus{outline:none}

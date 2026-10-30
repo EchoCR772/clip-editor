@@ -41,6 +41,7 @@ const { launch, checker, bigLibrary } = require('./helpers');
     const after = await w.$$eval('#libgrid .clip', els => els.map(e => e._clip.root.split(/[\\/]/).pop()));
     check(after.length < before && after.every(r => r === 'dc'), 'only the chosen folder', after);
     check(await w.$eval('#foldertext', e => e.textContent) === 'dc', 'folder button label', await w.$eval('#foldertext', e => e.textContent));
+    check(await w.$eval('#folderlist', e => e.lastElementChild.classList.contains('fadd') && /Add folder/.test(e.lastElementChild.textContent)), 'Add folder row under the folders');
     const games = await w.$$eval('.game .gname', e => e.map(x => x.textContent));
     check(!games.includes('Peak') && games.includes('Deadlock'), 'games without clips there are hidden', games);
     await w.click('.frow:has-text("dc")'); await w.waitForTimeout(300);
@@ -91,6 +92,37 @@ const { launch, checker, bigLibrary } = require('./helpers');
     check(await w.$eval('#setov', e => !e.hidden && /Clip folders/.test(e.textContent)), 'settings overlay');
     await w.keyboard.press('Escape'); await w.waitForTimeout(400);
     check(await w.$eval('#setov', e => e.hidden), 'Escape closes settings');
+
+    // updates: Ask first by default; switching modes is saved
+    await w.keyboard.press('Control+Comma'); await w.waitForTimeout(500);
+    const modes = await w.$$eval('.setopt', els => els.map(e => [e.querySelector('.setname').textContent, e.classList.contains('on')]));
+    check(JSON.stringify(modes) === JSON.stringify([['Ask first', true], ['Automatic', false], ['Off', false]]), 'update modes, Ask first by default', modes);
+    await w.click('.setopt:has-text("Automatic")'); await w.waitForTimeout(400);
+    check(await w.evaluate(async () => (await T.settingsGet()).updateMode) === 'auto', 'update mode saved');
+    await w.click('.setopt:has-text("Ask first")'); await w.waitForTimeout(400);
+    await w.keyboard.press('Escape'); await w.waitForTimeout(300);
+
+    // an update is found: soft button -> what's new + size -> Later makes it quiet -> Download
+    await w.evaluate(() => showUpdate({ state: 'available', mode: 'ask', version: '9.9.9', size: 150 * 1048576, later: false, notes: '## New\n- **Faster** exports\n- Fixed `drag`' }));
+    check(await w.$eval('#updbtn', e => !e.hidden && e.textContent.trim() === 'Update available' && !e.classList.contains('quiet')), 'Update available button');
+    await w.click('#updbtn'); await w.waitForSelector('.modal.upd'); await w.waitForTimeout(1500);
+    const box = await w.$eval('.modal.upd', e => ({ sub: e.querySelector('.updsub').textContent, items: [...e.querySelectorAll('li')].map(l => l.textContent), btns: [...e.querySelectorAll('.mbtn')].map(b => b.textContent), bold: !!e.querySelector('li strong') }));
+    check(/9\.9\.9/.test(box.sub) && /150\.0 MB/.test(box.sub) && box.btns.join('|') === 'Later|Download', 'update dialog: version, size, Later / Download', box);
+    check(box.items.length >= 2, 'update dialog shows the changelog', box.items);
+    await w.click('.modal.upd >> text=Later'); await w.waitForTimeout(300);
+    await w.evaluate(() => showUpdate({ ...upd, later: true }));
+    check(await w.$eval('#updbtn', e => !e.hidden && e.classList.contains('quiet')), 'Later makes the button quiet');
+    await w.evaluate(() => showUpdate({ ...upd, state: 'downloading', progress: 40 }));
+    check(await w.$eval('#updtext', e => e.textContent) === 'Downloading 40%', 'download progress in the button');
+    await w.evaluate(() => showUpdate({ ...upd, state: 'ready' }));
+    check(await w.$eval('#updtext', e => e.textContent) === 'Restart to update' && await w.$eval('#updbtn', e => !e.classList.contains('quiet')), 'Restart to update');
+    await w.evaluate(() => showUpdate({ ...upd, state: 'downloading', mode: 'auto' }));
+    check(await w.$eval('#updbtn', e => e.hidden), 'automatic downloads stay out of the way');
+    await w.evaluate(() => showUpdate({ state: 'none' }));
+    await w.click('#appmenu'); await w.waitForTimeout(200); await w.hover('#ctxmenu >> text=Help'); await w.waitForTimeout(200);
+    const help = await w.$$eval('#ctxsub button', els => els.map(e => e.innerText.split('\n')[0]));
+    check(help.includes('Changelog') && help.includes('Check for Updates...'), 'Help menu: Changelog', help);
+    await w.keyboard.press('Escape'); await w.waitForTimeout(200);
     check(!run.errs.length, 'no page errors (cards)', run.errs);
   } catch (err) { check(false, 'test crashed: ' + err.message); } finally { await run.app.close(); }
 
