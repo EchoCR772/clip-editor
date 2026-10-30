@@ -46,11 +46,12 @@ if (process.argv[2] === '--compare') {
   await w.click('#sidetoggle'); await settle(); await w.mouse.move(700, 500); await settle(); S.collapsed = await snap();
   await w.hover('#games .game >> nth=1'); await settle(); S.railTip = await snap();
   await w.click('#sidetoggle'); await settle();
-  await w.click('#setbtn'); await settle(); S.settings = await snap();
-  await w.click('#libtab'); await settle();
+  await w.click('#appmenu'); await w.waitForTimeout(200); await w.hover('#ctxmenu >> text=File'); await w.waitForTimeout(200); await w.click('#ctxsub >> text=Settings'); await settle(); S.settings = await snap();
+  await w.keyboard.press('Escape'); await settle();
+  await w.click('#folderbtn'); await settle(); S.folders = await snap();
+  await w.click('#folderbtn'); await settle();
   await w.click('.clip >> nth=0'); await w.waitForSelector('#qt.on'); await settle(); await settle(); S.overlay = await snap();
-  await w.click('#qtcollapse'); await settle(); S.overlayCollapsed = await snap();
-  await w.click('#qtrexpand'); await w.keyboard.press('Escape'); await settle();
+  await w.keyboard.press('Escape'); await settle();
   fs.writeFileSync(outFile, JSON.stringify(S));
   console.log('wrote', outFile);
   await app.close();

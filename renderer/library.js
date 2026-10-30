@@ -1,32 +1,36 @@
-// ---------- pages: Clips library, editor, Settings ----------
-// The "Clips" page lists every clip in the user's clip folders (NVIDIA's per-game folders,
-// Discord's clip folder, anything they add). The sidebar starts with the folders; click one to
-// see its games. Back/forward (mouse side buttons, Alt+arrows) moves between pages like a browser.
+// ---------- the Clips library, the title bar's library tab, back/forward, Settings ----------
+// The library lists every clip in the user's clip folders (NVIDIA's per-game folders, Discord's
+// clip folder, the Trimmed folder, anything they add). The sidebar lists games across the chosen
+// folders; the Folders button picks which folders count. Back/forward (title bar arrows, mouse side
+// buttons, Alt+arrows) moves between views and open clips like a browser.
 
-let page = 'lib'; // 'lib' | 'edit' | 'settings'
 const L = {
   data: null, scanning: false, again: false, dirty: true,
-  src: 'all', game: 'all', kind: 'all', sort: 'new', q: '',
+  game: 'all', folders: null, kind: 'all', sort: 'new', q: '',
   months: true,        // split Newest/Oldest into month sections
-  trims: 'hide',       // trimmed clips in the other sections: 'show' | 'hide' | 'only'
   side: { w: 300, collapsed: false },
+  folderOpen: false,   // the Folders panel in the sidebar
   thumbs: new Map(),   // path -> { url, duration, error }
   sel: new Set(), anchor: -1, // selected clip paths; last clicked (for Shift+click)
   list: [], shown: 0,  // filtered clips and how many are on the page so far
+  seen: {},            // view -> when it was last left (clips saved after that are NEW)
+  opened: new Set(),   // clips opened this session (no longer NEW)
+  viewKey: null, newSince: null,
 };
 try {
   const p = JSON.parse(localStorage.getItem('library') || '{}');
-  for (const k of ['src', 'game', 'kind', 'sort']) if (typeof p[k] === 'string') L[k] = p[k];
+  for (const k of ['game', 'kind', 'sort']) if (typeof p[k] === 'string') L[k] = p[k];
+  if (Array.isArray(p.folders)) L.folders = p.folders.filter(x => typeof x === 'string');
   if (typeof p.months === 'boolean') L.months = p.months;
-  if (['show', 'hide', 'only'].includes(p.trims)) L.trims = p.trims;
   if (p.side) L.side = { w: Math.min(460, Math.max(220, +p.side.w || 300)), collapsed: !!p.side.collapsed };
+  if (p.seen && typeof p.seen === 'object') L.seen = p.seen;
 } catch (e) { /* ignore */ }
 const saveLibPrefs = () => {
-  try { localStorage.setItem('library', JSON.stringify({ src: L.src, game: L.game, kind: L.kind, sort: L.sort, months: L.months, trims: L.trims, side: L.side })); } catch (e) { /* ignore */ }
+  try { localStorage.setItem('library', JSON.stringify({ game: L.game, folders: L.folders, kind: L.kind, sort: L.sort, months: L.months, side: L.side, seen: L.seen })); } catch (e) { /* ignore */ }
 };
 
 const KINDS = [
-  ['all', 'All'], ['discord', 'Discord'], ['replay', 'Instant Replay'], ['recording', 'Recordings'],
+  ['all', 'All'], ['discord', 'Discord'], ['replay', 'Instant Replay'], ['recording', 'Recordings'], ['trim', 'Trimmed'],
 ];
 const KIND_BADGE = { discord: 'Clip', replay: 'Instant Replay', recording: 'Recording', trim: 'Trimmed' };
 const SRC_LOOK = {
@@ -39,41 +43,116 @@ const samePathR = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 const h = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const fmtWhen = ms => new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 const fmtMonth = ms => new Date(ms).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+const isToday = ms => new Date(ms).toDateString() === new Date().toDateString();
 const fmtLen = s => { s = Math.round(s); const m = Math.floor(s / 60); return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : `${m}:${String(s % 60).padStart(2, '0')}`; };
 const hue = s => { let x = 0; for (const c of s) x = (x * 31 + c.charCodeAt(0)) | 0; return Math.abs(x) % 360; };
 const folderName = p => p.split(/[\\/]/).filter(Boolean).pop() || p;
 const srcLabel = f => SRC_LOOK[f.kind].label || folderName(f.path);
+// a clip's title: the name you gave it, else when it was made
+const clipTitle = c => c.title || `Clip from ${fmtWhen(c.date)}`;
 
-function setPage(p) {
-  if (p !== 'edit' && exporting) return;
-  if (p === 'edit' && !active) p = 'lib';
-  const was = page;
-  page = p;
-  libMode = p !== 'edit';
-  const app = $('app');
-  app.classList.toggle('nonedit', p !== 'edit');
-  $('library').hidden = p !== 'lib';
-  $('settings').hidden = p !== 'settings';
-  $('libtab').classList.toggle('active', p === 'lib');
-  $('setbtn').classList.toggle('on', p === 'settings');
-  if (p !== 'edit') v.pause();
-  if (p !== 'lib') { stopPreview(); hideMenu(); }
-  if (p === 'lib') { document.title = 'Clips - ' + T.appName; if (L.dirty || !L.data) loadLibrary(); }
-  else if (p === 'settings') { document.title = 'Settings - ' + T.appName; renderSettings(); }
-  else document.title = info ? info.name + ' - ' + T.appName : T.appName;
-  if (was !== p || p === 'edit') renderTabs();
+// ---------- title bar ----------
+// the view's name in the middle of the title bar (like Discord's server name) closes the editor
+$('libtab').onclick = () => showLibrary();
+$('navback').onclick = () => navInput(-1, true);
+$('navfwd').onclick = () => navInput(1, true);
+let appVersion = '';
+T.settingsGet().then(r => { if (r.ok) appVersion = r.version; });
+// every shortcut, in a dialog like Discord's
+function shortcutsBox() {
+  const rows = [['Ctrl+O', 'Open a video'], ['Ctrl+B', 'Show / hide Your Library'], ['Ctrl+= / - / 0', 'Zoom in / out / actual size'], ['F11', 'Full screen'], ['Ctrl+V', 'Open a video copied in File Explorer'], ['Ctrl+F', 'Search'], ['Ctrl+A', 'Select all clips'], ['Delete', 'Delete the selected clips'],
+    ['F2', 'Rename'], ['Alt+Left / Right', 'Back / forward'], ['Ctrl+,', 'Settings'], ['', ''], ['Space', 'Play / pause (editor)'], ['I  O', 'Set start / end at the playhead'],
+    [',  .', 'One frame back / forward'], ['J  L', 'Back / forward 10 seconds'], ['Home  End', 'Start / end of the trim'], ['Ctrl+C', 'Copy the trimmed clip'], ['Esc', 'Close']];
+  hideMenu();
+  const ov = h('div', 'modal-ov'), box = h('div', 'modal wide');
+  const x = h('button', 'modal-x'); x.append(icoSpan('x'));
+  const grid = h('div', 'keys');
+  for (const [k, d] of rows) { if (!k) { grid.append(h('div', 'keysep'), h('div', 'keysep')); continue; } grid.append(h('kbd', '', k), h('span', '', d)); }
+  box.append(x, h('h2', '', 'Keyboard shortcuts'), grid);
+  ov.append(box); document.body.append(ov);
+  requestAnimationFrame(() => ov.classList.add('on'));
+  const done = () => { document.removeEventListener('keydown', key, true); ov.classList.remove('on'); setTimeout(() => ov.remove(), 160); };
+  const key = e => { e.stopPropagation(); if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); done(); } };
+  document.addEventListener('keydown', key, true);
+  x.onclick = done;
+  ov.addEventListener('pointerdown', e => { if (e.target === ov && e.button === 0) done(); });
+}
+// the menu at the top left (like Claude's and Discord's): opening videos, folders, settings
+$('appmenu').onclick = e => {
+  e.stopPropagation();
+  const m = $('ctxmenu');
+  if (!m.hidden && m.dataset.for === 'appmenu') { hideMenu(); return; }
+  const r = $('appmenu').getBoundingClientRect();
+  const edit = document.activeElement && document.activeElement.tagName === 'INPUT';
+  const ed = window.qtIsOpen && window.qtIsOpen(), q = window.qtApi;
+  const sel = L.sel.size ? selected() : [];
+  openMenu(r.left, r.bottom + 6, [
+    { text: 'File', sub: [
+      { text: 'Open Video...', hint: 'Ctrl+O', run: () => pickFile() },
+      { text: 'Add Clips Folder...', run: async () => { const x = await T.libAddFolder(); if (!x.ok) libToast(x.error, 'err'); else if (x.changed) { L.dirty = true; loadLibrary(); libToast('Folder added.'); } } },
+      { text: 'Open Trimmed Folder', run: async () => { const x = await T.exportOpenDir(); if (!x.ok) libToast(x.error, 'err'); } },
+      '-',
+      { text: 'Settings', hint: 'Ctrl+Comma', run: () => openSettings() },
+      '-',
+      { text: 'Close Clip', hint: 'Esc', run: () => window.closeActiveTab(), disabled: !ed },
+      { text: 'Exit', hint: 'Alt+F4', run: () => window.close() },
+    ] },
+    { text: 'Edit', sub: [
+      { text: ed ? 'Copy Video' : sel.length > 1 ? `Copy ${sel.length} Videos` : 'Copy Video', hint: 'Ctrl+C', run: () => (ed ? q.copy() : copyClips(sel)), disabled: !ed && !sel.length },
+      { text: 'Paste Video', hint: 'Ctrl+V', run: () => T.clipboardFile().then(openResult) },
+      { text: 'Delete', hint: 'Del', run: () => trashClips(sel), disabled: ed || !sel.length },
+      { text: 'Rename', hint: 'F2', run: () => (ed ? q.rename() : renameClip(sel[0])), disabled: !ed && sel.length !== 1 },
+      '-',
+      { text: 'Select All', hint: 'Ctrl+A', run: () => selectAll(), disabled: ed },
+      { text: 'Clear Selection', hint: 'Esc', run: () => clearSel(), disabled: ed || !sel.length },
+      '-',
+      { text: 'Find...', hint: 'Ctrl+F', run: () => { showLibrary(); $('libsearch').focus(); $('libsearch').select(); } },
+    ] },
+    { text: 'View', sub: [
+      { text: 'Your Library', hint: 'Ctrl+B', check: !L.side.collapsed, run: () => toggleSidebar() },
+      { text: 'Folders', check: L.folderOpen && !L.side.collapsed, run: () => { if (L.side.collapsed) { L.side.collapsed = false; applySide(); saveLibPrefs(); L.folderOpen = true; } else L.folderOpen = !L.folderOpen; $('folderbox').classList.toggle('open', L.folderOpen); } },
+      '-',
+      { text: 'Zoom In', hint: 'Ctrl+=', run: () => T.win('zoom-in') },
+      { text: 'Zoom Out', hint: 'Ctrl+-', run: () => T.win('zoom-out') },
+      { text: 'Actual Size', hint: 'Ctrl+0', run: () => T.win('zoom-reset') },
+      '-',
+      { text: 'Full Screen', hint: 'F11', run: () => T.win('fullscreen') },
+    ] },
+    { text: 'Playback', sub: [
+      { text: 'Play / Pause', hint: 'Space', run: () => q.toggle(), disabled: !ed },
+      { text: 'Previous Clip', run: () => q.step(-1), disabled: !ed || !q.hasPrev() },
+      { text: 'Next Clip', run: () => q.step(1), disabled: !ed || !q.hasNext() },
+      '-',
+      { text: 'Back 10 Seconds', hint: 'J', run: () => q.seek(-10), disabled: !ed },
+      { text: 'Forward 10 Seconds', hint: 'L', run: () => q.seek(10), disabled: !ed },
+      '-',
+      { text: 'Loop Trim', check: q ? q.isLoop() : true, run: () => q.loop(), disabled: !ed },
+    ] },
+    { text: 'Help', sub: [
+      { text: 'Keyboard Shortcuts', hint: 'Ctrl+/', run: shortcutsBox },
+      '-',
+      { text: `${T.appName} ${appVersion || ''}`.trim(), run: () => {}, disabled: true },
+    ] },
+  ]);
+  m.dataset.for = 'appmenu';
+  $('appmenu').classList.add('open');
+};
+// the library's name sits in the middle of the title bar; clicking it (or Home) closes the editor
+function showLibrary() {
+  closeSettings();
+  if (window.qtHide) window.qtHide();
+  $('libtab').classList.add('active');
+  if (L.dirty || !L.data) loadLibrary();
+  document.title = T.appName;
   navCommit();
 }
-const setLib = on => setPage(on ? 'lib' : 'edit');
-$('libtab').onclick = () => setPage('lib');
-$('setbtn').onclick = () => { if (page !== 'settings') setPage('settings'); else if (H.i > 0) navGo(-1); else setPage('lib'); };
 
 // ---------- back / forward ----------
 const H = { list: [], i: -1, applying: false, timer: 0 };
 function navState() {
-  if (page === 'edit') return { page, tab: active ? active.id : null };
-  if (page === 'lib') return { page, src: L.src, game: L.game };
-  return { page };
+  const p = window.qtActivePath && window.qtActivePath();
+  if (p) return { clip: p };
+  return { game: L.game, folders: L.folders };
 }
 // record where we are; several changes in one go (open a clip -> switch tab) become one step
 function navCommit() {
@@ -86,25 +165,31 @@ function navCommit() {
     H.list.push(s);
     if (H.list.length > 100) H.list.shift();
     H.i = H.list.length - 1;
+    showNavButtons();
   }, 0);
+}
+function showNavButtons() {
+  $('navback').disabled = H.i <= 0;
+  $('navfwd').disabled = H.i >= H.list.length - 1;
 }
 function navGo(d) {
   clearTimeout(H.timer);
   for (let j = H.i + d; j >= 0 && j < H.list.length; j += d) {
     const s = H.list[j];
-    if (s.page === 'edit' && !tabs.some(t => t.id === s.tab)) continue; // that tab was closed
+    if (s.clip && !(window.qtHasTab && window.qtHasTab(s.clip))) continue; // that tab was closed
     if (JSON.stringify(s) === JSON.stringify(navState())) { H.i = j; continue; }
     H.i = j;
     H.applying = true;
     try {
-      if (s.page === 'edit') { const t = tabs.find(x => x.id === s.tab); setPage('edit'); switchTo(t); }
-      else if (s.page === 'lib') {
-        const changed = L.src !== s.src || L.game !== s.game;
-        L.src = s.src; L.game = s.game;
-        setPage('lib');
+      if (s.clip) window.qtActivatePath(s.clip);
+      else {
+        const changed = L.game !== s.game || JSON.stringify(L.folders) !== JSON.stringify(s.folders);
+        L.game = s.game; L.folders = s.folders;
+        showLibrary();
         if (changed && L.data) { saveLibPrefs(); renderSide(); renderGrid(true); }
-      } else setPage(s.page);
+      }
     } finally { H.applying = false; }
+    showNavButtons();
     return;
   }
 }
@@ -113,13 +198,13 @@ function navInput(d, key) {
   const now = Date.now();
   if (!key && now - lastNav < 300) return; // the mouse button arrives both as a click and as an app command
   if (!key) lastNav = now;
-  if (exporting) return;
   hideMenu();
   navGo(d);
 }
 window.addEventListener('mousedown', e => { if (e.button === 3 || e.button === 4) e.preventDefault(); });
 window.addEventListener('mouseup', e => { if (e.button === 3 || e.button === 4) { e.preventDefault(); navInput(e.button === 3 ? -1 : 1); } });
 T.onNav(dir => navInput(dir === 'back' ? -1 : 1));
+showNavButtons();
 
 // ---------- loading ----------
 async function loadLibrary() {
@@ -130,13 +215,18 @@ async function loadLibrary() {
   L.scanning = false;
   if (r.ok) {
     // folder activity often changes nothing we show; then leave the cards alone instead of rebuilding them
-    const sig = JSON.stringify([r.folders, r.clips.map(c => [c.path, c.size, c.date, c.duration, c.game, c.gameName])]);
-    if (!(L.data && sig === L.sig)) { L.sig = sig; L.data = r; renderLibrary(); }
+    const sig = JSON.stringify([r.folders, r.clips.map(c => [c.path, c.size, c.date, c.duration, c.game, c.gameName, c.title])]);
+    if (!(L.data && sig === L.sig)) {
+      const first = !L.data;
+      L.sig = sig; L.data = r;
+      renderLibrary(!first);
+    }
   } else libEmpty(r.error);
   if (L.again) { L.again = false; loadLibrary(); }
 }
-T.onLibChanged(() => { if (page === 'lib') loadLibrary(); else L.dirty = true; });
+T.onLibChanged(() => { if (!$('library').classList.contains('away')) loadLibrary(); else L.dirty = true; });
 T.onLibProgress(n => { if (!L.data) libEmpty(`Reading your clips... ${n}`); });
+window.addEventListener('beforeunload', () => { leaveView(); saveLibPrefs(); });
 
 function libEmpty(text, withButton) {
   const box = $('libgrid');
@@ -145,20 +235,71 @@ function libEmpty(text, withButton) {
   d.append(h('div', '', text));
   if (withButton) {
     const b = h('button', 'btn'); b.append(icoSpan('gear'), document.createTextNode('Open Settings'));
-    b.onclick = () => setPage('settings');
+    b.onclick = () => openSettings();
     d.append(b);
   }
   box.append(d);
 }
 
-function renderLibrary() {
+// update: the library changed under us (keep the scroll position and the cards that are still there)
+function renderLibrary(update) {
   const d = L.data;
   if (!d) return;
-  if (L.src !== 'all' && !d.folders.some(f => !f.missing && samePathR(f.path, L.src))) { L.src = 'all'; L.game = 'all'; }
-  if (L.game !== 'all' && !d.clips.some(c => c.game === L.game && (L.src === 'all' || samePathR(c.root, L.src)))) L.game = 'all';
+  if (L.game !== 'all' && !d.clips.some(c => c.game === L.game && inFolders(c))) L.game = 'all';
+  renderFolders();
   renderSide();
-  renderGrid();
+  renderGrid(false, update);
 }
+
+// ---------- which folders count (the Folders button in the sidebar) ----------
+const liveFolders = () => (L.data ? L.data.folders.filter(f => !f.missing) : []);
+// the chosen folders' paths: by default everything except the Trimmed folder
+function chosenFolders() {
+  const live = liveFolders();
+  let list = L.folders ? live.filter(f => L.folders.some(p => samePathR(p, f.path))) : live.filter(f => f.kind !== 'trimmed');
+  if (!list.length) list = live.filter(f => f.kind !== 'trimmed');
+  if (!list.length) list = live;
+  return list.map(f => f.path);
+}
+const inFolders = c => chosenFolders().some(p => samePathR(p, c.root));
+function renderFolders() {
+  const live = liveFolders(), chosen = chosenFolders();
+  const box = $('folderlist');
+  box.replaceChildren();
+  for (const f of live) {
+    const on = chosen.some(p => samePathR(p, f.path));
+    const n = L.data.clips.filter(c => samePathR(c.root, f.path)).length;
+    const look = SRC_LOOK[f.kind];
+    const row = h('button', 'frow' + (on ? ' on' : ''));
+    row.title = f.path;
+    const box2 = h('span', 'fchk'); box2.append(icoSpan('check'));
+    row.append(box2, iconAvatar(look.icon, look.color, look.img), h('span', 'fname', srcLabel(f)), h('span', 'fcount', String(n)));
+    row.onclick = () => {
+      let next = chosen.slice();
+      if (on) { if (next.length === 1) return; next = next.filter(p => !samePathR(p, f.path)); } // at least one stays on
+      else next.push(f.path);
+      L.folders = next;
+      saveLibPrefs();
+      renderLibrary();
+      navCommit();
+    };
+    box.append(row);
+  }
+  if (!live.length) {
+    const b = h('button', 'linkbtn', 'Add a clips folder in Settings');
+    b.onclick = () => openSettings();
+    box.append(b);
+  }
+  const all = live.length && chosen.length === live.length;
+  $('foldertext').textContent = !live.length ? 'No folders' : all ? 'All folders'
+    : chosen.length <= 2 ? chosen.map(p => srcLabel(live.find(f => samePathR(f.path, p)))).join(', ') : `${chosen.length} folders`;
+}
+$('folderbtn').onclick = () => {
+  if (L.side.collapsed) { L.side.collapsed = false; applySide(); saveLibPrefs(); L.folderOpen = true; }
+  else L.folderOpen = !L.folderOpen;
+  $('folderbox').classList.toggle('open', L.folderOpen);
+  hideTip();
+};
 
 // ---------- tooltips (Spotify-style: a small dark label above the thing you hover) ----------
 const tip = { el: null, timer: 0 };
@@ -203,17 +344,17 @@ document.addEventListener('mouseover', e => {
   // the app's own controls (buttons, icons, sliders) get this style: their title="" is turned
   // into one when hovered. Everything else (file names, game names, paths) keeps the normal tooltip.
   const titled = e.target.closest && e.target.closest('[title]');
-  if (titled && titled.matches('button, input[type=range], .ibtn, .btn, .chip, .seg label')) {
+  if (titled && titled.matches('button:not(.frow):not(.qt-title), input[type=range], .ibtn, .btn, .chip, .tb-btn')) {
     const tt = titled.getAttribute('title');
     titled.removeAttribute('title');
     if (tt) titled.dataset.tip = tt; else delete titled.dataset.tip;
   }
-  const rail = e.target.closest && (($('libside').classList.contains('collapsed') && e.target.closest('#libside [data-rail-tip]')) || e.target.closest('.qt-rail [data-rail-tip]'));
+  const rail = e.target.closest && $('libside').classList.contains('collapsed') && e.target.closest('#libside [data-rail-tip]');
   if (rail) {
     if (rail === tip.el) return;
     hideTip();
     tip.el = rail;
-    showTip(rail, rail.dataset.railTip, rail.closest('.qt-rail') ? 'left' : 'right'); // no delay
+    showTip(rail, rail.dataset.railTip, 'right'); // no delay
     return;
   }
   const el = e.target.closest && e.target.closest('[data-tip]');
@@ -231,11 +372,13 @@ applySide();
 function applySide() {
   $('library').style.setProperty('--sidew', (L.side.collapsed ? 80 : L.side.w) + 'px');
   $('libside').classList.toggle('collapsed', L.side.collapsed);
+  if (L.side.collapsed) { L.folderOpen = false; $('folderbox').classList.remove('open'); }
   $('sidetoggle').dataset.tip = L.side.collapsed ? 'Open Your Library' : 'Collapse Your Library';
   $('sidetoggle').dataset.tipPos = L.side.collapsed ? 'right' : '';
   if (tip.el === $('sidetoggle')) showTip($('sidetoggle'));
 }
-$('sidetoggle').onclick = () => { L.side.collapsed = !L.side.collapsed; applySide(); saveLibPrefs(); };
+function toggleSidebar() { L.side.collapsed = !L.side.collapsed; applySide(); saveLibPrefs(); }
+$('sidetoggle').onclick = toggleSidebar;
 
 // drag the edge to resize; drag it narrow enough and it collapses
 $('sidegrip').addEventListener('pointerdown', e => {
@@ -302,10 +445,9 @@ function gamesOf(clips) {
 
 function renderSide() {
   const d = L.data;
-  const head = $('sidetitle'), box = $('games');
-  head.replaceChildren();
+  const box = $('games');
   box.replaceChildren();
-  const row = (key, name, count, av, on, click, title, sub) => {
+  const row = (name, count, av, on, click, title) => {
     const r = h('div', 'game' + (on ? ' on' : ''));
     // collapsed sidebar: the name pops up right next to the picture, straight away (like Discord)
     r.dataset.railTip = name;
@@ -313,72 +455,32 @@ function renderSide() {
     const txt = h('div', 'gtext');
     const nm = h('span', 'gname', name);
     nm.title = title || name; // expanded: the full name if it's cut off
-    txt.append(nm, h('span', 'gcount', count == null ? '' : `${count} clip${count === 1 ? '' : 's'}${sub ? '  ·  ' + sub : ''}`));
+    txt.append(nm, h('span', 'gcount', `${count} clip${count === 1 ? '' : 's'}`));
     r.append(av, txt);
     r.onclick = click;
     return r;
   };
-  if (L.src === 'all') {
-    box.append(row('all', 'All clips', d.clips.length, iconAvatar('grid', '#1a191c'), L.game === 'all',
-      () => { L.game = 'all'; saveLibPrefs(); renderSide(); renderGrid(true); navCommit(); }));
-    const live = d.folders.filter(f => !f.missing);
-    if (live.length) box.append(h('div', 'gsec', 'Folders'));
-    for (const f of live) {
-      const n = d.clips.filter(c => samePathR(c.root, f.path)).length;
-      const look = SRC_LOOK[f.kind];
-      box.append(row(f.path, srcLabel(f), n, iconAvatar(look.icon, look.color, look.img), false,
-        () => { L.src = f.path; L.game = 'all'; saveLibPrefs(); renderSide(); renderGrid(true); navCommit(); },
-        `${srcLabel(f)} - ${f.path} (${n})`, 'Folder'));
-    }
-    if (!live.length) {
-      const b = h('button', 'linkbtn', 'Add a clips folder in Settings');
-      b.onclick = () => setPage('settings');
-      box.append(b);
-    }
-    return;
-  }
-  // inside one folder: its games
-  const f = d.folders.find(x => samePathR(x.path, L.src));
-  // which folder you're in, under "Your Library"; click it to go back up
-  const crumb = h('button', 'crumb');
-  crumb.title = 'Back to all folders';
-  crumb.append(icoSpan('back'), h('span', 'crumbname', srcLabel(f)));
-  crumb.onclick = () => { L.src = 'all'; L.game = 'all'; saveLibPrefs(); renderSide(); renderGrid(true); navCommit(); };
-  head.append(crumb);
-  const inSrc = d.clips.filter(c => samePathR(c.root, f.path));
-  const look = SRC_LOOK[f.kind];
-  box.append(row('all', `All ${srcLabel(f)} clips`, inSrc.length, iconAvatar(look.icon, look.color, look.img), L.game === 'all',
-    () => { L.game = 'all'; saveLibPrefs(); renderSide(); renderGrid(true); navCommit(); }));
-  const games = gamesOf(inSrc);
+  const pick = key => () => { L.game = key; saveLibPrefs(); renderSide(); renderGrid(true); showLibrary(); };
+  const here = d.clips.filter(inFolders);
+  box.append(row('All clips', here.length, iconAvatar('grid', '#1a191c'), L.game === 'all', pick('all')));
+  // games with no clips in the chosen folders aren't listed
+  const games = gamesOf(here);
   if (games.length) box.append(h('div', 'gsec', 'Games'));
   for (const g of games) {
-    const r = row(g.key, g.name, g.count, avatar(g.name, g.latestPath), L.game === g.key,
-      () => { L.game = g.key; saveLibPrefs(); renderSide(); renderGrid(true); navCommit(); });
-    r.addEventListener('contextmenu', e => gameMenu(e, g, f));
+    const r = row(g.name, g.count, avatar(g.name, g.latestPath), L.game === g.key, pick(g.key));
+    r.addEventListener('contextmenu', e => gameMenu(e, g));
     box.append(r);
   }
 }
 
 // ---------- grid ----------
-const isTrimRoot = p => !!L.data && L.data.folders.some(f => f.kind === 'trimmed' && samePathR(f.path, p));
-const inTrimmedFolder = () => L.src !== 'all' && isTrimRoot(L.src);
 function scope() {
-  const d = L.data;
-  let base = d.clips.filter(c => (L.src === 'all' || samePathR(c.root, L.src)) && (L.game === 'all' || c.game === L.game));
-  if (inTrimmedFolder()) return base;
-  // in NVIDIA/Discord/other folders, a game's trims (from the trimmed folder) can come along
-  if (L.src !== 'all' && L.trims !== 'hide') {
-    const games = L.game !== 'all' ? new Set([L.game]) : new Set(base.map(c => c.game));
-    base = base.concat(d.clips.filter(c => isTrimRoot(c.root) && games.has(c.game)));
-  }
-  if (L.trims === 'hide') base = base.filter(c => c.kind !== 'trim');
-  else if (L.trims === 'only') base = base.filter(c => c.kind === 'trim');
-  return base;
+  return L.data.clips.filter(c => inFolders(c) && (L.game === 'all' || c.game === L.game));
 }
 function filtered(base) {
   const q = L.q.trim().toLowerCase();
   let list = base.filter(c => L.kind === 'all' || c.kind === L.kind);
-  if (q) list = list.filter(c => (c.gameName + ' ' + c.name + ' ' + c.sub).toLowerCase().includes(q));
+  if (q) list = list.filter(c => (c.gameName + ' ' + c.name + ' ' + c.sub + ' ' + (c.title || '')).toLowerCase().includes(q));
   const dur = c => { const t = L.thumbs.get(c.path); return (t && t.duration) || c.duration || 0; };
   const by = {
     new: (a, b) => b.date - a.date,
@@ -389,22 +491,48 @@ function filtered(base) {
   return list.sort(by);
 }
 
-function renderGrid(resetScroll) {
+// ---------- NEW clips ----------
+// Like Discord: clips saved since you last looked at this view are marked NEW; the mark goes away
+// once you leave the view or open the clip.
+const viewKey = () => JSON.stringify([L.game, chosenFolders().map(p => p.toLowerCase()).sort()]);
+function leaveView() { if (L.viewKey) L.seen[L.viewKey] = Date.now(); }
+function enterView() {
+  const k = viewKey();
+  if (k === L.viewKey) return;
+  leaveView();
+  L.viewKey = k;
+  // a view never seen before: what's new since the app was last open
+  L.newSince = L.seen[k] || L.seen.quit || Date.now();
+  const keys = Object.keys(L.seen);
+  if (keys.length > 200) for (const x of keys.sort((a, b) => L.seen[a] - L.seen[b]).slice(0, keys.length - 200)) delete L.seen[x];
+  saveLibPrefs();
+}
+window.addEventListener('beforeunload', () => { L.seen.quit = Date.now(); saveLibPrefs(); });
+const isNew = c => L.newSince && c.date > L.newSince && !L.opened.has(c.path);
+
+function libTitle() {
   const d = L.data;
-  if (!d) return;
-  const f = L.src === 'all' ? null : d.folders.find(x => samePathR(x.path, L.src));
   const base = scope();
   const g = L.game === 'all' ? null : base[0] || d.clips.find(c => c.game === L.game);
-  $('libname').textContent = g ? g.gameName : f ? `All ${srcLabel(f)} clips` : 'All clips';
-  // the game's (or folder's) picture next to the title, like Discord
-  const hk = g ? 'g:' + g.game : f ? 'f:' + f.path : 'all';
+  const chosen = chosenFolders(), live = liveFolders();
+  const one = chosen.length === 1 && live.length > 1 ? live.find(f => samePathR(f.path, chosen[0])) : null;
+  $('libname').textContent = g ? g.gameName : one ? `All ${srcLabel(one)} clips` : 'All clips';
+  // the game's (or folder's) picture, like Discord's server icon
+  const hk = g ? 'g:' + g.game : one ? 'f:' + one.path : 'all';
   if ($('libicon').dataset.k !== hk) {
     $('libicon').dataset.k = hk;
-    const look = f ? SRC_LOOK[f.kind] : null;
+    const look = one ? SRC_LOOK[one.kind] : null;
     $('libicon').replaceChildren(g ? avatar(g.gameName, (gamesOf(base)[0] || {}).latestPath)
       : look ? iconAvatar(look.icon, look.color, look.img) : iconAvatar('grid', '#1a191c'));
   }
-  $('libwhere').textContent = g && f ? srcLabel(f) : '';
+}
+
+function renderGrid(resetScroll, update) {
+  const d = L.data;
+  if (!d) return;
+  enterView();
+  libTitle();
+  const base = scope();
   // type chips: only the kinds that are here
   const chips = $('libkinds');
   chips.replaceChildren();
@@ -421,8 +549,6 @@ function renderGrid(resetScroll) {
     }
   }
   $('sorttext').textContent = (SORTS.find(x => x[0] === L.sort) || SORTS[0])[1];
-  $('trimbtn').hidden = inTrimmedFolder();
-  $('trimtext').textContent = (TRIMS.find(x => x[0] === L.trims) || TRIMS[1])[2];
 
   L.list = filtered(base);
   const here = new Set(L.list.map(c => c.path));
@@ -435,12 +561,17 @@ function renderGrid(resetScroll) {
   const box = $('libgrid');
   const keep = resetScroll ? 0 : $('libscroll').scrollTop;
   const want = resetScroll ? 60 : Math.max(60, L.shown);
+  // cards that are still there are moved into the new layout instead of being made again, so a
+  // refresh (a new clip saved, a rename) doesn't make every picture blink
+  const old = new Map();
+  if (update) for (const el of box.querySelectorAll('.clip')) old.set(el._clip.path, el);
   box.replaceChildren();
-  L.shown = 0; L.lastMonth = null; L.cards = null;
+  L.shown = 0; L.lastMonth = null; L.cards = null; L.reuse = old;
   if (!d.folders.some(x => !x.missing)) return libEmpty("Couldn't find a clips folder. Add the folder your clips are saved in.", true);
   if (!d.clips.length) return libEmpty('No clips in your folders yet.', true);
   if (!L.list.length) return libEmpty(L.q ? `No clips match "${L.q}".` : 'No clips here.');
-  showMore(want, true);
+  showMore(want, !update);
+  L.reuse = null;
   $('libscroll').scrollTop = keep;
 }
 
@@ -452,13 +583,15 @@ function showMore(n = 60, fresh) {
   const t0 = performance.now(), first = L.shown;
   for (let i = L.shown; i < end; i++) {
     const c = L.list[i];
-    const month = byDate ? fmtMonth(c.date) : '';
+    const month = byDate ? (isToday(c.date) ? 'Today' : fmtMonth(c.date)) : '';
     if (!L.cards || month !== L.lastMonth) {
       if (byDate) box.append(h('h4', 'month', month));
       L.cards = h('div', 'cards');
       box.append(L.cards);
       L.lastMonth = month;
     }
+    const kept = L.reuse && L.reuse.get(c.path);
+    if (kept && kept._clip.size === c.size) { refreshCard(kept, c); L.cards.append(kept); continue; }
     // only what's on screen when a folder opens waves in; everything further down is simply
     // there by the time you scroll to it
     const wave = fresh && i - first < 15;
@@ -524,60 +657,100 @@ function card(c, wave) {
   const el = h('div', 'clip' + (wave ? ' loading' : '') + (L.sel.has(c.path) ? ' sel' : ''));
   el._clip = c;
   el.tabIndex = 0;
+  el.draggable = true;
   el.append(h('div', 'ph'), h('div', 'shade2'));
   const chk = h('button', 'cchk');
   chk.title = 'Select (Ctrl+click)';
   chk.append(icoSpan('check'));
   chk.onclick = e => { e.stopPropagation(); toggleSel(c, e.shiftKey); };
   el.append(chk);
-  if (KIND_BADGE[c.kind] || c.origin) {
-    const b = h('span', 'ckind');
-    if (c.origin) { const t = h('span', 'csrc ' + c.origin), i = new Image(); i.src = SRC_LOOK[c.origin].img; i.alt = ''; i.draggable = false; t.append(i); b.append(t); }
-    b.append(h('span', '', KIND_BADGE[c.kind] || SRC_LOOK[c.origin].label));
-    el.append(b);
-  }
+  const b = h('span', 'ckind');
+  el.append(b);
   const acts = h('div', 'cact');
   const more = h('button', 'cbtn'); more.title = 'More'; more.append(icoSpan('more'));
-  more.onclick = e => { e.stopPropagation(); const r = more.getBoundingClientRect(); showMenu(r.right - 8, r.bottom + 4, c, el); };
+  more.onclick = e => { e.stopPropagation(); const r = more.getBoundingClientRect(); showMenu(r.right - 8, r.bottom + 4, el._clip, el); };
   const del = h('button', 'cbtn'); del.title = 'Delete'; del.append(icoSpan('trash'));
-  del.onclick = e => { e.stopPropagation(); trashClips(L.sel.has(c.path) ? selected() : [c]); };
+  del.onclick = e => { e.stopPropagation(); trashClips(L.sel.has(el._clip.path) ? selected() : [el._clip]); };
   acts.append(more, del);
   el.append(acts);
   // bottom: title, then a line that fades away on hover while the seek bar and buttons slide up
   const bottom = h('div', 'cbottom');
-  bottom.append(h('div', 'ctitle', fmtWhen(c.date)));
+  bottom.append(h('div', 'ctitle'));
   const subrow = h('div', 'csubrow');
-  const sub = [L.game === 'all' ? c.gameName : '', c.sub, fmtSize(c.size)].filter(Boolean).join('  ·  ');
-  const durEl = h('span', 'cdur');
-  subrow.append(h('span', 'csub', sub), durEl);
-  setLength(durEl, c);
+  subrow.append(h('span', 'csub'), h('span', 'cdur'));
   bottom.append(subrow);
   const hb = h('div', 'hbar');
   const trk = h('div', 'trk'); trk.append(h('div', 'fill'));
-  trk.addEventListener('pointerdown', e => { e.stopPropagation(); seekPreview(el, c, e); });
+  trk.addEventListener('pointerdown', e => { e.stopPropagation(); seekPreview(el, el._clip, e); });
   trk.onclick = e => e.stopPropagation();
   const btns = h('div', 'cbtns');
   const edit = h('button', 'hbtn'); edit.append(icoSpan('scissors'), h('span', '', 'Trim'));
-  edit.onclick = e => { e.stopPropagation(); openQuickTrim(c, el); };
+  edit.onclick = e => { e.stopPropagation(); openClip(el._clip, el); };
   const copy = h('button', 'hbtn primary'); copy.append(icoSpan('copy'), h('span', '', 'Copy Video'));
-  copy.title = 'Copy the file, then paste it into Discord with Ctrl+V';
-  copy.onclick = e => { e.stopPropagation(); copyClips([c]); };
+  copy.title = 'Copy the clip, then paste it into Discord with Ctrl+V';
+  copy.onclick = e => { e.stopPropagation(); copyClips([el._clip]); };
   btns.append(edit, copy);
   hb.append(trk, btns);
   bottom.append(hb);
   el.append(bottom);
+  refreshCard(el, c);
   el.onclick = e => {
-    if (e.ctrlKey || e.metaKey) toggleSel(c);
-    else if (e.shiftKey) toggleSel(c, true);
-    else if (L.sel.size) toggleSel(c);
-    else openQuickTrim(c, el);
+    if (e.ctrlKey || e.metaKey) toggleSel(el._clip);
+    else if (e.shiftKey) toggleSel(el._clip, true);
+    else if (L.sel.size) toggleSel(el._clip);
+    else openClip(el._clip, el);
   };
-  el.addEventListener('keydown', e => { if (e.key === 'Enter') openQuickTrim(c, el); });
-  el.addEventListener('contextmenu', e => { e.preventDefault(); showMenu(e.clientX, e.clientY, c, el); });
-  el.addEventListener('mouseenter', () => schedulePreview(el, c));
-  el.addEventListener('mouseleave', () => { if (preview.el === el && !preview.dragging) stopPreview(); clearTimeout(preview.timer); });
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') openClip(el._clip, el); });
+  el.addEventListener('contextmenu', e => { e.preventDefault(); showMenu(e.clientX, e.clientY, el._clip, el); });
+  el.addEventListener('mouseenter', () => { schedulePreview(el, el._clip); readyDrag(el._clip, 250); });
+  el.addEventListener('mouseleave', () => { if (preview.el === el && !preview.dragging) stopPreview(); clearTimeout(preview.timer); clearTimeout(dragTimer); });
+  el.addEventListener('pointerdown', e => { if (e.button === 0) readyDrag(el._clip, 0); });
+  el.addEventListener('dragstart', e => dragOut(e, el._clip));
   thumbObs.observe(el);
   return el;
+}
+// the parts of a card that follow the clip's details (title, badges, length)
+function refreshCard(el, c) {
+  el._clip = c;
+  el.querySelector('.ctitle').textContent = clipTitle(c);
+  el.querySelector('.ctitle').title = c.name;
+  const sub = [L.game === 'all' ? c.gameName : '', c.sub, fmtSize(c.size)].filter(Boolean).join('  ·  ');
+  el.querySelector('.csub').textContent = sub;
+  setLength(el.querySelector('.cdur'), c);
+  const b = el.querySelector('.ckind');
+  b.replaceChildren();
+  if (isNew(c)) b.append(h('span', 'cnew', 'NEW'));
+  if (c.origin) { const t = h('span', 'csrc ' + c.origin), i = new Image(); i.src = SRC_LOOK[c.origin].img; i.alt = ''; i.draggable = false; t.append(i); b.append(t); }
+  if (KIND_BADGE[c.kind] || c.origin) b.append(h('span', 'cklabel', KIND_BADGE[c.kind] || SRC_LOOK[c.origin].label));
+  b.hidden = !b.childNodes.length;
+  b.classList.toggle('hasnew', isNew(c));
+}
+const cardsFor = path => [...document.querySelectorAll('#libgrid .clip')].filter(el => samePathR(el._clip.path, path));
+
+// ---------- dragging a card out (into Discord, a folder...) ----------
+// What's dropped is the clip as you left it: trimmed, with your audio changes, under its name. That
+// file is made ahead of time (hovering or pressing the card) since a drag needs it at once.
+let dragTimer = null;
+const needsMaking = c => !!(c.edit || c.title);
+function readyDrag(c, ms) {
+  clearTimeout(dragTimer);
+  if (!needsMaking(c)) return;
+  dragTimer = setTimeout(() => T.dragPrepare(c.path), ms);
+}
+function dragOut(e, c) {
+  e.preventDefault();
+  stopPreview();
+  const file = needsMaking(c) ? T.dragReady(c.path) : c.path;
+  if (!file) {
+    libToast('Getting it ready... drag it again in a moment.');
+    T.dragPrepare(c.path).then(r => { if (r.ok) libToast('Ready. Drag it again.'); else libToast(r.error, 'err'); });
+    return;
+  }
+  // our own window shouldn't offer "Drop to edit" for it
+  document.body.classList.add('dragout');
+  const done = () => { document.body.classList.remove('dragout'); window.removeEventListener('pointermove', done); };
+  setTimeout(() => window.addEventListener('pointermove', done), 300);
+  T.dragStart(c.path, file);
 }
 
 // ---------- saved trims on cards ----------
@@ -595,8 +768,11 @@ function setLength(d, c) {
   if (t) { d.append(icoSpan('scissors'), document.createTextNode(fmtLen(t.b - t.a))); d.title = `Trimmed from ${fmtLen(c.duration)}`; }
   else { d.textContent = c.duration ? fmtLen(c.duration) : ''; d.removeAttribute('title'); }
 }
+// the editor changed a clip (trim, name): update its cards and the library's copy of it
 function updateCardEdit(c) {
-  for (const el of document.querySelectorAll('#libgrid .clip')) if (el._clip === c) showLength(el, c);
+  const lib = L.data && L.data.clips.find(x => samePathR(x.path, c.path));
+  if (lib && lib !== c) { lib.edit = c.edit; lib.title = c.title; if (c.duration) lib.duration = c.duration; }
+  for (const el of cardsFor(c.path)) refreshCard(el, lib || c);
 }
 
 // ---------- selecting ----------
@@ -627,23 +803,17 @@ $('selcopy').onclick = () => copyClips(selected());
 $('seldel').onclick = () => trashClips(selected());
 $('selclear').onclick = clearSel;
 
+// Copy Video from cards: trims, audio changes and names are applied (made ahead when possible)
 async function copyClips(list) {
   if (!list.length) return;
-  // trimmed clips (or ones with audio changes) are made into new files first, like Discord does
-  const sizes = new Map(), paths = [];
-  const edited = list.filter(c => c.edit);
-  if (edited.length) libToast(edited.length === 1 && list.length === 1 ? 'Making the trimmed clip...' : `Making ${edited.length} trimmed clip${edited.length === 1 ? '' : 's'}...`);
-  for (const c of list) {
-    if (!c.edit) { paths.push(c.path); sizes.set(c.path, c.size); continue; }
-    const x = await qtExportSaved(c, 'temp');
-    if (!x.ok) return libToast(x.error, 'err');
-    paths.push(x.out); sizes.set(x.out, x.size);
-  }
-  const r = await T.copyFiles(paths);
+  const edited = list.filter(c => c.edit).length;
+  const slow = setTimeout(() => libToast(edited > 1 ? `Making ${edited} trimmed clips...` : 'Making the trimmed clip...'), 300);
+  const r = await T.copyClips(list.map(c => c.path));
+  clearTimeout(slow);
   if (!r.ok) return libToast(r.error, 'err');
-  const big = paths.filter(p => sizes.get(p) > 10 * 1048576).length;
+  const big = r.files.filter(f => f.size > 10 * 1048576).length;
   const what = list.length === 1 ? 'Copied' : `Copied ${list.length} clips`;
-  libToast(big ? `${what}. ${big === 1 && list.length === 1 ? `It's ${fmtSize(sizes.get(paths[0]))}, so` : `${big} of them are over 10 MB, so`} Discord needs Nitro to send ${big === 1 ? 'it' : 'them'}.` : `${what}. Paste into Discord with Ctrl+V.`);
+  libToast(big ? `${what}. ${big === 1 && list.length === 1 ? `It's ${fmtSize(r.files[0].size)}, so` : `${big} of them are over 10 MB, so`} Discord needs Nitro to send ${big === 1 ? 'it' : 'them'}.` : `${what}. Paste into Discord with Ctrl+V.`);
 }
 
 // cards fade in one after another in reading order (a wave), however the pictures happen to load
@@ -655,12 +825,12 @@ function paintCard(el, r) {
   if (r && r.url) {
     const img = h('img');
     img.alt = '';
-    img.decoding = 'async';
+    img.draggable = false;
+    img.decoding = 'sync';
     img.onerror = () => { img.remove(); el.classList.add('noimg'); showCard(el); };
     img.src = r.url;
-    el.prepend(img);
-    // only fade in once the picture is decoded, so it never pops in half-drawn
-    (img.decode ? img.decode() : Promise.resolve()).then(() => { img.decoding = 'sync'; showCard(el); }, () => {});
+    // only shown once the picture is decoded, so it never pops in half-drawn
+    (img.decode ? img.decode() : Promise.resolve()).then(() => { el.prepend(img); showCard(el); }, () => { el.prepend(img); showCard(el); });
   } else if (r && r.error && !r.triedPlayer) {
     // ffmpeg couldn't read it; the built-in player often can, so take the frame from there
     r.triedPlayer = true;
@@ -701,13 +871,9 @@ function playerThumb(c) {
   return job;
 }
 
-async function openClip(c, el) {
-  if (exporting) return;
-  el && el.classList.add('opening');
-  const r = await T.open(c.path);
-  el && el.classList.remove('opening');
-  if (!r.ok) return libToast(r.error, 'err');
-  handle(r);
+function openClip(c, el) {
+  if (isNew(c)) { L.opened.add(c.path); for (const x of cardsFor(c.path)) refreshCard(x, c); }
+  openQuickTrim(c, el);
 }
 
 // ---------- hover preview ----------
@@ -719,7 +885,7 @@ function schedulePreview(el, c) {
 }
 function startPreview(el, c) {
   stopPreview();
-  if (!el.isConnected || page !== 'lib') return;
+  if (!el.isConnected || $('library').classList.contains('away')) return;
   const vid = h('video');
   vid.muted = true; vid.playsInline = true; vid.loop = true; vid.preload = 'auto';
   // Big clips are read from the drive as they play; the first time, the first frame shows up
@@ -799,23 +965,53 @@ function stopPreview() {
 }
 
 // ---------- right-click menu ----------
-function openMenu(x, y, items, alignRight) {
-  stopPreview();
-  const m = $('ctxmenu');
+// items: { icon, text, hint, run, cls, disabled } or { ..., sub: [items] } (opens to the side on hover) or '-'
+function fillMenu(m, items) {
   m.replaceChildren();
-  m.dataset.for = '';
+  const checks = items.some(it => it && it.check !== undefined);
   for (const it of items) {
     if (it === '-') { m.append(h('div', 'msep')); continue; }
-    const b = h('button', it.cls || ''); b.append(icoSpan(it.icon), h('span', '', it.text));
-    b.onclick = () => { hideMenu(); it.run(); };
+    const b = h('button', it.cls || '');
+    if (checks) { const c = icoSpan(it.check ? 'check' : 'blank'); c.classList.add('mcheck'); b.append(c); }
+    if (it.icon) b.append(icoSpan(it.icon));
+    b.append(h('span', '', it.text));
+    if (it.hint) b.append(h('span', 'mhint', it.hint));
+    if (it.sub) { const c = icoSpan('back'); c.classList.add('flip', 'msub'); b.append(c); b.classList.add('hassub'); }
+    if (it.disabled) b.disabled = true;
+    if (it.sub) {
+      const show = () => { for (const x of m.querySelectorAll('.hassub')) x.classList.toggle('subopen', x === b); openSub(b, it.sub); };
+      b.addEventListener('mouseenter', show);
+      b.onclick = show;
+    } else {
+      if (m.id === 'ctxmenu') b.addEventListener('mouseenter', () => { closeSub(); for (const x of m.querySelectorAll('.hassub')) x.classList.remove('subopen'); });
+      b.onclick = () => { hideMenu(); it.run(); };
+    }
     m.append(b);
   }
+}
+function openMenu(x, y, items, alignRight) {
+  stopPreview();
+  closeSub();
+  const m = $('ctxmenu');
+  m.dataset.for = '';
+  fillMenu(m, items);
   m.hidden = false;
   const r = m.getBoundingClientRect();
   if (alignRight) x -= r.width;
   m.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + 'px';
   m.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + 'px';
 }
+function openSub(btn, items) {
+  let sm = $('ctxsub');
+  if (!sm) { sm = h('div'); sm.id = 'ctxsub'; document.body.append(sm); }
+  fillMenu(sm, items);
+  sm.hidden = false;
+  const r = btn.getBoundingClientRect(), mr = btn.parentElement.getBoundingClientRect(), w = sm.offsetWidth, ht = sm.offsetHeight;
+  const x = mr.right - 2 + w > innerWidth - 8 ? mr.left - w + 2 : mr.right - 2; // right against the menu, like Spotify's
+  sm.style.left = Math.max(8, x) + 'px';
+  sm.style.top = Math.max(8, Math.min(r.top - 5, innerHeight - ht - 8)) + 'px';
+}
+function closeSub() { const sm = $('ctxsub'); if (sm) sm.hidden = true; }
 function showMenu(x, y, c, el) {
   const many = L.sel.has(c.path) && L.sel.size > 1 ? selected() : null;
   if (many) {
@@ -828,24 +1024,34 @@ function showMenu(x, y, c, el) {
   }
   openMenu(x, y, [
     { icon: 'copy', text: 'Copy Video', run: () => copyClips([c]) },
-    { icon: 'scissors', text: 'Quick trim', run: () => openQuickTrim(c, el) },
-    { icon: 'edit', text: 'Edit', run: () => openClip(c, el) },
+    { icon: 'scissors', text: 'Edit', run: () => openClip(c, el) },
+    { icon: 'edit', text: 'Rename', run: () => renameClip(c) },
     '-',
     { icon: 'folder', text: 'Show in Folder', run: () => T.libAction('reveal', c.path) },
     '-',
     { icon: 'trash', text: 'Delete', run: () => trashClips([c]), cls: 'danger' },
   ]);
 }
-const MENU_BUTTONS = ['libsort', 'trimbtn', 'qtsavemenu', 'qtcopymenu', 'qtmore', 'qtrmore']; // buttons that open a menu; clicking one again closes it
-function hideMenu() { $('ctxmenu').hidden = true; for (const id of MENU_BUTTONS) { const b = $(id); if (b) b.classList.remove('open'); } }
-document.addEventListener('pointerdown', e => { if (!$('ctxmenu').contains(e.target) && !e.target.closest(MENU_BUTTONS.map(id => '#' + id).join(', '))) hideMenu(); });
+const MENU_BUTTONS = ['appmenu', 'libsort', 'qtsavemenu', 'qtcopymenu', 'qtmore']; // buttons that open a menu; clicking one again closes it
+function hideMenu() { $('ctxmenu').hidden = true; closeSub(); for (const id of MENU_BUTTONS) { const b = $(id); if (b) b.classList.remove('open'); } }
+document.addEventListener('pointerdown', e => { if (!$('ctxmenu').contains(e.target) && !($('ctxsub') && $('ctxsub').contains(e.target)) && !e.target.closest(MENU_BUTTONS.map(id => '#' + id).join(', '))) hideMenu(); });
 window.addEventListener('blur', hideMenu);
 
-// everything goes to the Recycle Bin, and main asks first
-function closeTabsUnder(paths, dirs) {
-  const inside = p => paths.some(x => samePathR(x, p)) || dirs.some(d => String(p).toLowerCase().startsWith(String(d).toLowerCase() + (d.includes('\\') ? '\\' : '/')));
-  for (const t of tabs.slice()) if (t.info && inside(t.info.path)) closeTab(t);
+// ---------- rename (only in the app; the file keeps its name) ----------
+async function renameClip(c) {
+  const t = await promptBox({ title: 'Rename clip', body: 'The name is used in the app and for copies and exports. The file itself keeps its name.', value: c.title || '', placeholder: clipTitle({ date: c.date }), ok: 'Save' });
+  if (t === null) return;
+  setClipTitle(c, t);
 }
+async function setClipTitle(c, t) {
+  const r = await T.renameClip(c.path, t);
+  if (!r.ok) return libToast(r.error, 'err');
+  c.title = r.title;
+  updateCardEdit(c);
+  if (window.qtTitleChanged) window.qtTitleChanged(c.path, r.title);
+}
+
+// everything goes to the Recycle Bin, and main asks first
 function afterTrash(r, what) {
   if (!r.ok) { libToast(r.error, 'err'); return false; }
   if (r.cancelled) return false;
@@ -853,7 +1059,7 @@ function afterTrash(r, what) {
   const under = p => [...gone].some(g => p.toLowerCase() === g || p.toLowerCase().startsWith(g + '\\') || p.toLowerCase().startsWith(g + '/'));
   L.data.clips = L.data.clips.filter(c => !under(c.path));
   for (const p of [...L.sel]) if (under(p)) L.sel.delete(p);
-  renderLibrary();
+  renderLibrary(true);
   showSel();
   if (r.failed && r.failed.length) libToast(`Couldn't delete: ${r.failed.join('; ')}`, 'err');
   else libToast(`Moved ${what} to the Recycle Bin.`);
@@ -865,7 +1071,8 @@ window.addEventListener('keydown', e => { if (e.key === 'Shift') shiftHeld = tru
 window.addEventListener('keyup', e => { if (e.key === 'Shift') shiftHeld = false; }, true);
 window.addEventListener('blur', () => { shiftHeld = false; });
 
-function confirmBox({ title, body, ok = 'Delete', danger = true }) {
+// a Discord-style dialog; with `value` it has a text box and resolves to its text (null = cancelled)
+function confirmBox({ title, body, ok = 'Delete', danger = true, value, placeholder }) {
   return new Promise(resolve => {
     hideTip(); hideMenu();
     const ov = h('div', 'modal-ov'), box = h('div', 'modal');
@@ -873,7 +1080,14 @@ function confirmBox({ title, body, ok = 'Delete', danger = true }) {
     const row = h('div', 'modal-btns');
     const cancel = h('button', 'mbtn', 'Cancel'), go = h('button', 'mbtn ' + (danger ? 'danger' : 'primary'), ok);
     row.append(cancel, go);
-    box.append(x, h('h2', '', title), h('p', '', body), row);
+    box.append(x, h('h2', '', title), h('p', '', body));
+    let input = null;
+    if (value !== undefined) {
+      input = h('input', 'modal-in');
+      input.type = 'text'; input.value = value; input.placeholder = placeholder || ''; input.spellcheck = false; input.maxLength = 120;
+      box.append(input);
+    }
+    box.append(row);
     ov.append(box);
     document.body.append(ov);
     requestAnimationFrame(() => ov.classList.add('on'));
@@ -881,7 +1095,7 @@ function confirmBox({ title, body, ok = 'Delete', danger = true }) {
       document.removeEventListener('keydown', key, true);
       ov.classList.remove('on');
       setTimeout(() => ov.remove(), 160);
-      resolve(v);
+      resolve(input ? (v ? input.value : null) : v);
     };
     const key = e => {
       e.stopPropagation(); // the app's own shortcuts wait while this is open
@@ -892,13 +1106,14 @@ function confirmBox({ title, body, ok = 'Delete', danger = true }) {
     cancel.onclick = () => done(false);
     x.onclick = () => done(false);
     go.onclick = () => done(true);
-    ov.addEventListener('pointerdown', e => { if (e.target === ov) done(false); });
-    go.focus();
+    ov.addEventListener('pointerdown', e => { if (e.target === ov && e.button === 0) done(false); });
+    if (input) { input.focus(); input.select(); } else go.focus();
   });
 }
+const promptBox = o => confirmBox({ danger: false, ...o, value: o.value ?? '' });
 
 async function trashClips(list) {
-  if (!list.length || exporting) return;
+  if (!list.length) return;
   stopPreview();
   const n = list.length, size = fmtSize(list.reduce((s, c) => s + c.size, 0));
   if (!shiftHeld && !(await confirmBox({
@@ -907,24 +1122,23 @@ async function trashClips(list) {
       : `This moves ${n} clips (${size}) to the Recycle Bin, so you can still get them back. Hold Shift to delete without asking.`,
   }))) return;
   const paths = list.map(c => c.path);
-  closeTabsUnder(paths, []);
+  if (window.qtCloseTabsFor) await window.qtCloseTabsFor(paths, []);
   afterTrash(await T.libTrash(paths, true), n === 1 ? 'the clip' : `${n} clips`);
 }
 
 // right-click a game in the sidebar: its folder(s), or (Discord, no folders) its clips
-function gameMenu(e, g, f) {
+function gameMenu(e, g) {
   e.preventDefault();
-  const clips = L.data.clips.filter(c => c.game === g.key && samePathR(c.root, f.path));
-  const sep = f.path.includes('\\') ? '\\' : '/';
+  const clips = L.data.clips.filter(c => c.game === g.key && inFolders(c));
   const dirs = new Set();
   let loose = 0;
   for (const c of clips) {
-    const rel = c.path.slice(f.path.replace(/[\\/]+$/, '').length + 1);
-    const parts = rel.split(/[\\/]/);
-    if (parts.length > 1) dirs.add(f.path.replace(/[\\/]+$/, '') + sep + parts[0]); else loose++;
+    const root = String(c.root).replace(/[\\/]+$/, ''), sep = root.includes('\\') ? '\\' : '/';
+    const parts = c.path.slice(root.length + 1).split(/[\\/]/);
+    if (parts.length > 1) dirs.add(root + sep + parts[0]); else loose++;
   }
   const items = [];
-  if (dirs.size) items.push({ icon: 'folder', text: 'Open folder', run: () => T.libAction('reveal-folder', [...dirs][0]) });
+  if (dirs.size) items.push({ icon: 'folder', text: dirs.size > 1 ? 'Open folders' : 'Open folder', run: () => { for (const d of dirs) T.libAction('reveal-folder', d); } });
   items.push({ icon: 'check', text: `Select all ${clips.length} clips`, run: () => {
     if (L.game !== g.key) { L.game = g.key; saveLibPrefs(); renderSide(); renderGrid(true); navCommit(); }
     selectAll();
@@ -942,7 +1156,7 @@ function gameMenu(e, g, f) {
           body: `Everything in it goes to the Recycle Bin: ${what.join(' and ')}, ${fmtSize(st.bytes)}. You can still get it back from there.`,
         }))) return;
       }
-      closeTabsUnder([], [...dirs]);
+      if (window.qtCloseTabsFor) await window.qtCloseTabsFor([], [...dirs]);
       if (afterTrash(await T.libTrashFolders([...dirs], g.name, true), `the ${g.name} folder${dirs.size > 1 ? 's' : ''}`) && L.game === g.key) {
         L.game = 'all'; saveLibPrefs(); renderSide(); renderGrid(true);
       }
@@ -968,20 +1182,6 @@ $('libsearch').addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { L.q = $('libsearch').value; if (L.data) renderGrid(true); }, 120);
 });
-// trimmed clips: shown with the rest, hidden, or on their own
-const TRIMS = [['show', 'Show trimmed clips', 'Trimmed: shown'], ['hide', 'Hide trimmed clips', 'Trimmed: hidden'], ['only', 'Only trimmed clips', 'Only trimmed']];
-$('trimbtn').onclick = e => {
-  e.stopPropagation();
-  const m = $('ctxmenu');
-  if (!m.hidden && m.dataset.for === 'trims') { hideMenu(); return; }
-  const r = $('trimbtn').getBoundingClientRect();
-  openMenu(r.right, r.bottom + 6, TRIMS.map(([k, label]) => ({
-    icon: L.trims === k ? 'check' : 'blank', text: label, cls: L.trims === k ? 'cur' : '',
-    run: () => { L.trims = k; saveLibPrefs(); renderGrid(true); },
-  })), true);
-  m.dataset.for = 'trims';
-  $('trimbtn').classList.add('open');
-};
 // sort menu: a button like Discord's "Recent" that opens a small menu with a check on the current choice
 const SORTS = [['new', 'Newest'], ['old', 'Oldest'], ['long', 'Longest'], ['big', 'Largest']];
 $('libsort').onclick = e => {
@@ -1000,11 +1200,9 @@ $('libsort').onclick = e => {
   $('libsort').classList.add('open');
 };
 
-// keys while the library or settings is showing
+// keys while the library is showing
 function libKey(e) {
   const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
-  if (e.altKey && (k === 'arrowleft' || k === 'arrowright')) { e.preventDefault(); navInput(k === 'arrowleft' ? -1 : 1, true); return true; }
-  if (page !== 'lib') { if (k === 'escape') { navInput(-1, true); return true; } return false; }
   if (ctrl && k === 'f') { e.preventDefault(); $('libsearch').focus(); $('libsearch').select(); return true; }
   const typing = e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT';
   if (!typing && ctrl && k === 'a') { e.preventDefault(); selectAll(); return true; }
@@ -1015,17 +1213,40 @@ function libKey(e) {
     else if (preview.el) trashClips([preview.el._clip]);
     return true;
   }
+  if (!typing && k === 'f2') {
+    const c = (document.activeElement && document.activeElement._clip) || (preview.el && preview.el._clip);
+    if (c) { e.preventDefault(); renameClip(c); return true; }
+  }
   if (k === 'escape') {
     if (!$('ctxmenu').hidden) hideMenu();
     else if (L.sel.size) clearSel();
     else if ($('libsearch').value) { $('libsearch').value = ''; L.q = ''; renderGrid(true); }
-    else if (L.src !== 'all' || L.game !== 'all') navInput(-1, true);
+    else if (L.game !== 'all') navInput(-1, true);
     return true;
   }
   return false;
 }
 
-// ---------- settings ----------
+// ---------- settings (an overlay over the library) ----------
+const settingsOpen = () => !$('setov').hidden;
+function openSettings() {
+  hideMenu(); hideTip();
+  const ov = $('setov');
+  if (!ov.hidden) return;
+  ov.hidden = false;
+  requestAnimationFrame(() => ov.classList.add('on'));
+  renderSettings();
+}
+function closeSettings() {
+  const ov = $('setov');
+  if (ov.hidden) return;
+  ov.classList.remove('on');
+  setTimeout(() => { if (!ov.classList.contains('on')) ov.hidden = true; }, 160);
+  if (L.dirty) loadLibrary();
+}
+$('setclose').onclick = closeSettings;
+$('setov').addEventListener('pointerdown', e => { if (e.target === $('setov') && e.button === 0) closeSettings(); });
+
 async function renderSettings() {
   const r = await T.settingsGet();
   const box = $('setbody');
@@ -1041,7 +1262,7 @@ async function renderSettings() {
   const after = async fn => { const x = await fn(); if (x && !x.ok) libToast(x.error, 'err'); L.dirty = true; L.thumbs.clear(); renderSettings(); };
 
   // clip folders
-  const fs = section('Clip folders', 'Where the Clips page looks. NVIDIA and Discord folders are found automatically; removing one only hides it, nothing is deleted.');
+  const fs = section('Clip folders', 'Where the library looks. NVIDIA and Discord folders are found automatically; removing one only hides it, nothing is deleted. You can also drop a folder onto the window to add it.');
   const list = h('div', 'setcard');
   for (const f of r.folders) {
     const row = h('div', 'setrow');
@@ -1073,7 +1294,7 @@ async function renderSettings() {
   fs.append(btns);
 
   // trimmed clips
-  const xs = section('Trimmed clips', 'Exports are saved here, in a folder for each game, so your NVIDIA and Discord folders stay just your recordings. They show up as "Trimmed" in the sidebar. Save as still lets you put one anywhere.');
+  const xs = section('Trimmed clips', 'Exports are saved here, in a folder for each game, so your NVIDIA and Discord folders stay just your recordings. Tick "Trimmed" under Folders in the sidebar to see them. Export as... still lets you put one anywhere.');
   const xc = h('div', 'setcard');
   const xrow = h('div', 'setrow');
   const xt = h('div', 'settext');
@@ -1130,7 +1351,7 @@ async function renderSettings() {
   ds.append(card);
 
   // thumbnails
-  const ts = section('Thumbnails', 'Previews for the Clips page are saved so they load instantly. Clearing them is safe; they get made again as you scroll.');
+  const ts = section('Thumbnails', 'Previews for the library are saved so they load instantly. Clearing them is safe; they get made again as you scroll.');
   const tc = h('div', 'setcard');
   const trow = h('div', 'setrow');
   trow.append(h('div', 'settext', `${r.cache.files} files  ·  ${fmtSize(r.cache.bytes)}`));
@@ -1168,3 +1389,7 @@ async function renderSettings() {
 
   box.append(h('p', 'setnote ver', `${T.appName} ${r.version}`));
 }
+
+// ---------- start ----------
+loadLibrary();
+navCommit();

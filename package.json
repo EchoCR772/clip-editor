@@ -25,6 +25,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "smartcut.js",
       "renderer/**",
       "build/icon.png",
       "package.json"

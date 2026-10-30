@@ -24,6 +24,20 @@ function bigLibrary(n = 64) {
   return [dir];
 }
 
+// a 12 s clip with a keyframe every second and two audio tracks (NVIDIA-style separate tracks)
+function gopLibrary() {
+  const dir = path.join(OUT, 'goplib', 'nv', 'Deadlock');
+  const f = path.join(dir, 'Deadlock 2026.10.20 - 20.10.10.01.DVR.mp4');
+  if (!fs.existsSync(f)) {
+    fs.mkdirSync(dir, { recursive: true });
+    const ff = fs.existsSync('/usr/bin/ffmpeg') ? '/usr/bin/ffmpeg' : require(path.join(ROOT, 'node_modules', 'ffmpeg-static'));
+    require('child_process').execFileSync(ff, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30:duration=12',
+      '-f', 'lavfi', '-i', 'sine=f=440:d=12', '-f', 'lavfi', '-i', 'sine=f=880:d=12', '-map', '0', '-map', '1', '-map', '2',
+      '-c:v', 'libx264', '-g', '30', '-bf', '2', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-metadata:s:a:0', 'handler_name=SoundHandle', '-metadata:s:a:1', 'handler_name=SoundHandle', f]);
+  }
+  return [path.dirname(dir)];
+}
+
 async function launch({ name = 'run', library = LIB, gpu = false, keepProfile = false } = {}) {
   const ud = path.join(OUT, 'profile-' + name);
   const ex = path.join(OUT, 'exports-' + name);
@@ -35,7 +49,9 @@ async function launch({ name = 'run', library = LIB, gpu = false, keepProfile = 
   const app = await _electron.launch({
     executablePath: require(path.join(ROOT, 'node_modules', 'electron')),
     args: [ROOT, '--user-data-dir=' + ud, ...gpuFlags],
-    env: { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', CLIP_TRIMMER_LIBRARY: library.join(path.delimiter), CLIP_TRIMMER_EXPORTS: ex },
+    env: { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', CLIP_TRIMMER_LIBRARY: library.join(path.delimiter), CLIP_TRIMMER_EXPORTS: ex,
+      // the Linux ffmpeg-static build crashes on MPEG-TS (smart cut); the system one is fine
+      ...(process.platform === 'linux' && fs.existsSync('/usr/bin/ffmpeg') ? { CLIP_TRIMMER_FFMPEG: '/usr/bin/ffmpeg' } : {}) },
   });
   const w = await app.firstWindow();
   const errs = [];
@@ -58,14 +74,13 @@ function checker(testName) {
   return { check, done };
 }
 
-// open the Discord "Destiny 2" fixture clip (has Discord-style multi-track audio) in the overlay
+// open the Discord "Destiny 2" fixture clip (has Discord-style multi-track audio) in the editor
 async function openDiscordClip(w) {
-  await w.click('.game:has-text("dc")'); await w.waitForTimeout(400);
   await w.click('.game:has-text("Destiny 2")'); await w.waitForTimeout(500);
-  await w.click('.clip >> nth=0');
+  await w.click('.clip:has(.csrc.discord) >> nth=0');
   await w.waitForSelector('#qt.on', { timeout: 5000 });
   await w.waitForFunction(() => document.getElementById('qtstage').dataset.renderer, null, { timeout: 15000 });
   await w.waitForTimeout(1200);
 }
 
-module.exports = { ROOT, OUT, FIX, LIB, bigLibrary, launch, checker, openDiscordClip };
+module.exports = { ROOT, OUT, FIX, LIB, bigLibrary, gopLibrary, launch, checker, openDiscordClip };
