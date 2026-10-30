@@ -30,13 +30,27 @@ app.commandLine.appendSwitch('disable-checker-imaging');
 const APP_NAME = app.getName();
 const OLD_NAMES = ['Clip Trimmer'].filter(n => n !== APP_NAME);
 (function keepOldData() {
+  // After a rename, bring the old name's settings, trims, clip names, thumbnails and library
+  // choices over once. Moving the folder is quickest; if the new one already exists (or the old app
+  // still had files open), the files are copied instead.
   try {
-    const now = app.getPath('userData');
-    if (fs.existsSync(now)) return;
+    const now = app.getPath('userData'), mark = path.join(now, '.migrated');
+    if (fs.existsSync(mark)) return;
     for (const n of OLD_NAMES) {
       const old = path.join(app.getPath('appData'), n);
-      if (fs.existsSync(path.join(old, 'settings.json'))) { fs.renameSync(old, now); return; }
+      if (!fs.existsSync(path.join(old, 'settings.json'))) continue;
+      if (!fs.existsSync(now)) {
+        try { fs.renameSync(old, now); fs.writeFileSync(mark, n); return; } catch (e) { /* copy instead */ }
+      }
+      fs.mkdirSync(now, { recursive: true });
+      for (const f of ['settings.json', 'edits.json', 'names.json', 'people.json', 'games.json', 'thumbs', 'icons', 'Local Storage']) {
+        const src = path.join(old, f);
+        if (fs.existsSync(src)) { try { fs.cpSync(src, path.join(now, f), { recursive: true, force: true }); } catch (e) { /* skip that one */ } }
+      }
+      fs.writeFileSync(mark, n);
+      return;
     }
+    if (fs.existsSync(now)) fs.writeFileSync(mark, '');
   } catch (e) { /* start fresh */ }
 })();
 const copyDir = () => path.join(app.getPath('temp'), APP_NAME);
