@@ -53,5 +53,11 @@ contextBridge.exposeInMainWorld('trimmer', {
   settingsSet: patch => ipcRenderer.invoke('settings-set', patch),
   thumbsClear: () => ipcRenderer.invoke('thumbs-clear'),
   win: what => ipcRenderer.invoke('win', what),
+  updateGet: () => ipcRenderer.invoke('update-get'),
+  updateCheck: () => ipcRenderer.invoke('update-check'),
+  updateInstall: () => ipcRenderer.invoke('update-install'),
+  onUpdate: cb => ipcRenderer.on('update', (_e, u) => cb(u)),
+  openUrl: url => ipcRenderer.invoke('open-url', url),
+  whatsNew: () => ipcRenderer.invoke('whats-new'),
   onNav: cb => ipcRenderer.on('nav', (_e, dir) => cb(dir)),
 });

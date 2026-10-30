@@ -1,8 +1,8 @@
 {
-  "name": "clip-trimmer",
-  "productName": "Clip Trimmer",
-  "version": "1.0.0",
-  "description": "Simple desktop video clip trimmer",
+  "name": "clip-editor",
+  "productName": "Clip Editor",
+  "version": "1.43.0",
+  "description": "Trim and share video clips",
   "main": "main.js",
   "author": "Cristian Rivera",
   "license": "MIT",
@@ -12,6 +12,7 @@
     "pack": "electron-builder --win --dir"
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "ffmpeg-static": "^5.3.0"
   },
   "devDependencies": {
@@ -21,14 +22,16 @@
   },
   "build": {
     "appId": "com.cristian.cliptrimmer",
-    "productName": "Clip Trimmer",
+    "productName": "Clip Editor",
     "files": [
       "main.js",
       "preload.js",
       "smartcut.js",
       "renderer/**",
       "build/icon.png",
-      "package.json"
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**"
@@ -48,12 +51,24 @@
       "oneClick": false,
       "createStartMenuShortcut": true,
       "createDesktopShortcut": true,
-      "shortcutName": "Clip Trimmer",
+      "shortcutName": "Clip Editor",
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "Clip-Trimmer-Setup-${version}.exe"
+      "artifactName": "Clip-Editor-Setup-${version}.exe"
     },
     "directories": {
       "output": "dist"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "EchoCR772",
+        "repo": "clip-editor",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EchoCR772/clip-editor.git"
   }
 }

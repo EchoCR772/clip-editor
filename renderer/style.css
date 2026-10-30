@@ -697,3 +697,12 @@ button:focus-visible,.clip:focus-visible{outline:2px solid var(--acc);outline-of
 #ctxsub .msep{margin:6px 4px}
 #ctxsub .mcheck{width:15px;height:15px;color:#fff;margin-left:-4px}
 #ctxsub button:disabled span{color:#6b6a70}
+/* "Update ready" in the title bar, like Discord's green download arrow */
+.tb-upd{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 8px;margin-right:6px;border:0;border-radius:7px;background:#23a55a;color:#fff;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;-webkit-app-region:no-drag;flex:none}
+.tb-upd:hover{background:#1f9150}
+.tb-upd[hidden]{display:none}
+.tb-upd .ico{width:16px;height:16px}
+.modal-body{max-height:55vh;overflow-y:auto;color:var(--mute);font-size:14px;line-height:1.45}
+.modal-body p{margin:0 0 10px;user-select:text}
+.modal-body h3{color:#fff;font-size:14px;margin:16px 0 8px}
+.modal-body .linkbtn{font-size:14px;padding:0}

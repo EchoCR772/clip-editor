@@ -1618,6 +1618,52 @@ ipcMain.handle('lib-reset-folders', wrap(async () => {
   return { changed: true };
 }));
 
+// ---------- updates (from the GitHub releases) ----------
+// Checks a few seconds after start and every 4 hours, downloads in the background, and tells the
+// window when an update is ready; it's installed on the next restart (or right away from the button).
+const upd = { state: 'idle', version: null, notes: null, progress: 0, error: null };
+let updater = null;
+function sendUpdate() { if (win && !win.isDestroyed()) win.webContents.send('update', upd); }
+function setupUpdates() {
+  if (!app.isPackaged || process.env.CLIP_TRIMMER_LIBRARY) return; // dev runs and tests don't update
+  try { updater = require('electron-updater').autoUpdater; } catch (e) { return; }
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  const set = patch => { Object.assign(upd, patch); sendUpdate(); };
+  updater.on('checking-for-update', () => set({ state: 'checking', error: null }));
+  updater.on('update-not-available', () => set({ state: 'none' }));
+  updater.on('update-available', i => set({ state: 'downloading', version: i.version, progress: 0 }));
+  updater.on('download-progress', p => set({ progress: Math.round(p.percent || 0) }));
+  updater.on('update-downloaded', i => {
+    const notes = typeof i.releaseNotes === 'string' ? i.releaseNotes : Array.isArray(i.releaseNotes) ? i.releaseNotes.map(n => n.note).join('\n') : '';
+    // shown once after the restart
+    const s = readSettings(); s.whatsNew = { version: i.version, notes }; writeSettings(s);
+    set({ state: 'ready', version: i.version, notes });
+  });
+  updater.on('error', e => set({ state: 'error', error: String(e && e.message || e).split('\n')[0] }));
+  const check = () => { if (upd.state !== 'downloading' && upd.state !== 'ready') updater.checkForUpdates().catch(() => {}); };
+  setTimeout(check, 8000);
+  setInterval(check, 4 * 3600 * 1000);
+}
+// links from the About box (only these sites)
+ipcMain.handle('open-url', (_e, url) => {
+  if (typeof url === 'string' && /^https:\/\/(github\.com|ffmpeg\.org)\//.test(url)) shell.openExternal(url);
+});
+ipcMain.handle('update-get', () => ({ ...upd, current: app.getVersion(), enabled: !!updater }));
+ipcMain.handle('update-check', async () => {
+  if (!updater) return { ...upd, enabled: false };
+  try { await updater.checkForUpdates(); } catch (e) { /* reported through 'error' */ }
+  return upd;
+});
+ipcMain.handle('update-install', () => { if (updater && upd.state === 'ready') setImmediate(() => updater.quitAndInstall(true, true)); });
+// what's new: the notes of the version that was just installed, shown once
+ipcMain.handle('whats-new', () => {
+  const s = readSettings(), w = s.whatsNew;
+  if (!w || w.version !== app.getVersion()) return null;
+  delete s.whatsNew; writeSettings(s);
+  return w;
+});
+
 // ---------- window / lifecycle ----------
 
 function argvFile(argv) {
@@ -1706,6 +1752,7 @@ if (engineTest) { /* the test sets up its own window */ } else if (!gotLock) {
     if (f) pendingOpen = f;
     createWindow();
     setTimeout(cleanLinks, 8000);
+    setupUpdates();
   });
   app.on('window-all-closed', () => app.quit());
 }

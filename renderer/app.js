@@ -47,6 +47,7 @@ const ICONS = {
   fileOpen: `<svg viewBox="0 0 24 24"><path ${S} d="M13.5 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5z"/><path ${S} d="M13.5 3.5v5h5M10.5 11.5v5l4-2.5z"/></svg>`,
   folderPlus: `<svg viewBox="0 0 24 24"><path ${S} d="M3.5 7.5a1.5 1.5 0 0 1 1.5-1.5h4.2l2 2H19a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5zM12 10.5v5.5M9.25 13.25h5.5"/></svg>`,
   menu: `<svg viewBox="0 0 24 24"><path ${S} d="M4.5 7h15M4.5 12h15M4.5 17h15"/></svg>`,
+  download: `<svg viewBox="0 0 24 24"><path ${S} d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14"/></svg>`,
   copy: `<svg viewBox="0 0 24 24"><rect ${S} x="8.5" y="8.5" width="11" height="11.5" rx="2"/><path ${S} d="M5 15.5V6a2 2 0 0 1 2-2h8.5"/></svg>`,
   export: `<svg viewBox="0 0 24 24"><path ${S} d="M12 15V4M7.5 8.5L12 4l4.5 4.5M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>`,
   replace: `<svg viewBox="0 0 24 24"><path ${S} d="M4.5 9.5a7.5 7.5 0 0 1 13.2-3.2M19.5 4v4h-4M19.5 14.5a7.5 7.5 0 0 1-13.2 3.2M4.5 20v-4h4"/></svg>`,

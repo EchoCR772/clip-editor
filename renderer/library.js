@@ -59,6 +59,66 @@ $('navfwd').onclick = () => navInput(1, true);
 let appVersion = '';
 T.settingsGet().then(r => { if (r.ok) appVersion = r.version; });
 // every shortcut, in a dialog like Discord's
+// ---------- updates ----------
+// A green button in the title bar once a new version is downloaded (like Discord's); one click
+// restarts into it. Help > Check for Updates checks right away.
+let upd = { state: 'idle' };
+function showUpdate(u) {
+  upd = u || upd;
+  const b = $('updbtn');
+  b.hidden = upd.state !== 'ready';
+  if (upd.state === 'ready') { $('updtext').textContent = 'Update ready'; b.dataset.tip = `Restart to update to ${upd.version}`; }
+}
+T.onUpdate(u => {
+  const was = upd.state;
+  showUpdate(u);
+  if (checkingByHand && was === 'checking') {
+    if (u.state === 'none') { checkingByHand = false; libToast(`You're on the latest version (${appVersion}).`); }
+    else if (u.state === 'downloading') { checkingByHand = false; libToast(`Downloading ${u.version}... it'll be ready in a moment.`); }
+    else if (u.state === 'error') { checkingByHand = false; libToast("Couldn't check for updates: " + u.error, 'err'); }
+  }
+});
+T.updateGet().then(showUpdate);
+let checkingByHand = false;
+async function checkUpdates() {
+  const u = await T.updateGet();
+  if (!u.enabled) { libToast('Updates are checked in the installed app.'); return; }
+  checkingByHand = true;
+  T.updateCheck();
+}
+$('updbtn').onclick = () => T.updateInstall();
+// after an update: what changed, once
+T.whatsNew().then(w => { if (w) infoBox(`What's new in ${w.version}`, w.notes || 'Bug fixes and improvements.'); });
+
+// a simple dialog with a title and text (or nodes)
+function infoBox(title, body) {
+  hideMenu();
+  const ov = h('div', 'modal-ov'), box = h('div', 'modal wide');
+  const x = h('button', 'modal-x'); x.append(icoSpan('x'));
+  const content = h('div', 'modal-body');
+  if (typeof body === 'string') { for (const line of body.replace(/<[^>]+>/g, '').split(/\n+/).filter(Boolean)) content.append(h('p', '', line.replace(/^[-*]\s*/, '• '))); }
+  else content.append(...body);
+  box.append(x, h('h2', '', title), content);
+  ov.append(box); document.body.append(ov);
+  requestAnimationFrame(() => ov.classList.add('on'));
+  const done = () => { document.removeEventListener('keydown', key, true); ov.classList.remove('on'); setTimeout(() => ov.remove(), 160); };
+  const key = e => { e.stopPropagation(); if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); done(); } };
+  document.addEventListener('keydown', key, true);
+  x.onclick = done;
+  ov.addEventListener('pointerdown', e => { if (e.target === ov && e.button === 0) done(); });
+}
+function aboutBox() {
+  const link = (text, url) => { const a = h('button', 'linkbtn', text); a.onclick = () => T.openUrl(url); return a; };
+  const p = (...kids) => { const e = h('p'); e.append(...kids); return e; };
+  infoBox(`${T.appName} ${appVersion}`, [
+    p('Trim and share your NVIDIA and Discord clips. Made by Cristian Rivera.'),
+    p(link('github.com/EchoCR772/clip-editor', 'https://github.com/EchoCR772/clip-editor')),
+    h('h3', '', 'Open-source parts'),
+    p('FFmpeg (GPL v3), used to read and make videos. Source: ', link('ffmpeg.org', 'https://ffmpeg.org/download.html'), ', build: ', link('ffmpeg-static', 'https://github.com/eugeneware/ffmpeg-static')),
+    p('Mediabunny (MPL 2.0), Electron (MIT), electron-updater (MIT). Full notices: ', link('THIRD_PARTY_NOTICES', 'https://github.com/EchoCR772/clip-editor/blob/main/THIRD_PARTY_NOTICES.md')),
+  ]);
+}
+
 function shortcutsBox() {
   const rows = [['Ctrl+O', 'Open a video'], ['Ctrl+B', 'Show / hide Your Library'], ['Ctrl+= / - / 0', 'Zoom in / out / actual size'], ['F11', 'Full screen'], ['Ctrl+V', 'Open a video copied in File Explorer'], ['Ctrl+F', 'Search'], ['Ctrl+A', 'Select all clips'], ['Delete', 'Delete the selected clips'],
     ['F2', 'Rename'], ['Alt+Left / Right', 'Back / forward'], ['Ctrl+,', 'Settings'], ['', ''], ['Space', 'Play / pause (editor)'], ['I  O', 'Set start / end at the playhead'],
@@ -131,7 +191,9 @@ $('appmenu').onclick = e => {
     { text: 'Help', sub: [
       { text: 'Keyboard Shortcuts', hint: 'Ctrl+/', run: shortcutsBox },
       '-',
-      { text: `${T.appName} ${appVersion || ''}`.trim(), run: () => {}, disabled: true },
+      upd.state === 'ready' ? { text: `Restart to Update (${upd.version})`, run: () => T.updateInstall() }
+        : { text: upd.state === 'downloading' ? `Downloading Update... ${upd.progress || 0}%` : 'Check for Updates...', run: checkUpdates, disabled: upd.state === 'downloading' || upd.state === 'checking' },
+      { text: `About ${T.appName}`, run: aboutBox },
     ] },
   ]);
   m.dataset.for = 'appmenu';
