@@ -460,7 +460,11 @@ function renderSide() {
     r.onclick = click;
     return r;
   };
-  const pick = key => () => { L.game = key; saveLibPrefs(); renderSide(); renderGrid(true); showLibrary(); };
+  // clicking the one you're on does nothing (All clips) or goes back to all clips (a game)
+  const pick = key => () => {
+    if (key === L.game) { if (key === 'all') { showLibrary(); return; } key = 'all'; }
+    L.game = key; saveLibPrefs(); renderSide(); renderGrid(true); showLibrary();
+  };
   const here = d.clips.filter(inFolders);
   box.append(row('All clips', here.length, iconAvatar('grid', '#1a191c'), L.game === 'all', pick('all')));
   // games with no clips in the chosen folders aren't listed

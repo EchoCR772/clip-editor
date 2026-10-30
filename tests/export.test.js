@@ -18,11 +18,18 @@ const cleanDecode = f => { try { execFileSync('/usr/bin/ffmpeg', ['-v', 'error',
   fs.copyFileSync(path.join(FIX, 'dc', path.basename(dcClip)), dcClip);
   const old = new Date(2026, 8, 1, 12, 0, 0);
   fs.utimesSync(dcClip, old, old);
-  const { app, w, errs, ud, ex } = await launch({ name: 'export', library: [...gopLibrary(), dcDir] });
+  // Discord clips without Discord's info, named after browser tabs (cut short) or a game
+  const tabDir = path.join(OUT, 'replacelib', 'tabs');
+  fs.mkdirSync(tabDir, { recursive: true });
+  const plain = path.join(FIX, 'nv', 'Desktop', 'Desktop 2026.10.27 - 15.36.33.06.DVR.mp4');
+  for (const n of ['(1)_Caedrel_-_Twitch_1392674718011621376.mp4', 'Caedrel_-_Twitch_-_P_1393419228584869888.mp4', 'Netflix_-_Personal_-_1393419228584869887.mp4', 'REPO_1393419228584869889.mp4']) fs.copyFileSync(plain, path.join(tabDir, n));
+  const { app, w, errs, ud, ex } = await launch({ name: 'export', library: [...gopLibrary(), dcDir, tabDir] });
   const statusText = () => w.$eval('#qtstatus', e => e.textContent);
   const setTrim = async (a, b) => { await w.fill('#qtin', a); await w.press('#qtin', 'Enter'); await w.fill('#qtout', b); await w.press('#qtout', 'Enter'); await w.waitForTimeout(300); };
   const waitStatus = re => w.waitForFunction(r => new RegExp(r).test(document.getElementById('qtstatus').textContent), re.source, { timeout: 30000 });
   try {
+    const games = await w.$$eval('.game .gname', e => e.map(x => x.textContent));
+    check(games.includes('Desktop') && games.includes('REPO') && !games.some(g => /Caedrel|Netflix/.test(g)), 'browser tab names go to Desktop', games);
     await w.click('.game:has-text("Deadlock")'); await w.waitForTimeout(400);
     await w.click('.clip:has(.csrc.nvidia)'); await w.waitForSelector('#qt.on'); await w.waitForTimeout(1500);
     check(await w.$$eval('.qt-arow .qt-anametext', e => e.map(x => x.textContent).join('|')) === 'Game / Desktop|Microphone', 'NVIDIA separate tracks');

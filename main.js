@@ -819,6 +819,11 @@ function isDesktopName(name) {
   return NOT_GAMES.has(n.toLowerCase().replace(/\.exe$/, '').replace(/[^a-z0-9]+/g, ''));
 }
 
+// A Discord file name cut short from a browser tab's title ("(1) Caedrel - Twitch", "Netflix -
+// Personal -", "Caedrel - Twitch - Y"): a "(N) " unread count in front, or a site's name after a dash.
+const SITES = /\s-\s*(twitch|youtube|netflix|disney|crunchyroll|peacock|hulu|prime video|max|spotify|weverse|kick|personal|google|reddit|x|twitter|instagram|tiktok|discord|microsoft)\b/i;
+const looksLikeTab = n => /^\(\d+\)\s/.test(n) || SITES.test(n) || /\s-\s*$/.test(n);
+
 // NVIDIA names folders after the game with ":" dropped ("Call of Duty  Black Ops 6") or after
 // the exe when it doesn't know the game ("peak.exe")
 const gameName = folder => folder.replace(/\.exe$/i, '').replace(/\s{2,}/g, ': ').trim() || 'Other';
@@ -936,10 +941,11 @@ async function scanFolder(root, kind, out, progress) {
       let game = meta && meta.app ? cleanGame(meta.app)
         : folder !== null ? gameName(folder)
         : dn ? dn[1].replace(/_/g, ' ').trim() : 'Other';
+      const rawGame = game;
       if (game !== 'Other' && isDesktopName(game)) game = 'Desktop';
       out.push({
         path: full, root, url: pathToFileURL(full).href, name: d.name, sub, date, size: st.size,
-        source: kind, kind: kind === 'trimmed' ? 'trim' : clipKind(d.name, meta), origin: clipOrigin(d.name, meta, kind), gameName: game, fromName: !(meta && meta.app) && folder === null && !!dn,
+        source: kind, kind: kind === 'trimmed' ? 'trim' : clipKind(d.name, meta), origin: clipOrigin(d.name, meta, kind), gameName: game, rawGame, fromName: !(meta && meta.app) && folder === null && !!dn,
         duration: e.error ? null : (e.duration || null), users: meta ? meta.users : [], edit: editFor(full),
         title: names.all()[nameKey(st, meta)] || null,
       });
@@ -958,13 +964,17 @@ async function scanLibrary() {
   // Discord cuts long game names short in file names ("Warhammer_40000_Da"); older clips have
   // nothing else, so match them to the full name newer clips carry
   const flat = x => x.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const full = [...new Set(clipsOut.filter(c => !c.fromName && c.source !== 'nvidia').map(c => c.gameName))];
+  // (the full names are compared before browser tabs etc. became "Desktop", so a cut-short tab title
+  // finds its tab and goes to Desktop with it)
+  const full = [...new Set(clipsOut.filter(c => !c.fromName && c.source !== 'nvidia').map(c => c.rawGame || c.gameName))];
   for (const c of clipsOut) {
     if (!c.fromName) continue;
     const f = flat(c.gameName);
     const hit = f.length >= 4 && full.find(n => flat(n).startsWith(f));
-    if (hit) c.gameName = hit;
+    if (hit) c.gameName = isDesktopName(hit) ? 'Desktop' : hit;
+    else if (looksLikeTab(c.gameName)) c.gameName = 'Desktop';
   }
+  for (const c of clipsOut) delete c.rawGame;
   // the same game from different folders ("Peak" and "peak.exe", NVIDIA and Discord, "Overwatch"
   // and "Overwatch 2") becomes one entry: by Discord's list of games when the name is in it, else
   // by its letters and numbers. Named after whichever spelling has the most clips.
@@ -1271,8 +1281,9 @@ ipcMain.on('drag-ready', (e, p) => {
   e.returnValue = have && have.sig === dragSig(p) && fs.existsSync(have.out) ? have.out : null;
 });
 ipcMain.on('drag-start', async (e, p, file) => {
+  // the clip itself (untouched, no name), or the file made for it
   const have = dragFiles.get(editKey(p));
-  if (!allowed(p) || !have || have.out !== file || !fs.existsSync(file)) return;
+  if (!allowed(p) || !fs.existsSync(file) || !(samePath(file, p) || (have && have.out === file))) return;
   let icon = null;
   try {
     const st = fs.statSync(p);

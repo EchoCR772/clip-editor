@@ -50,6 +50,13 @@ const { launch, checker, bigLibrary } = require('./helpers');
     // the editor: next clip, the title bar's name closes it, back/forward
     await w.click('.game:has-text("Destiny 2")'); await w.waitForTimeout(500);
     check(await w.$eval('#libname', e => e.textContent) === 'Destiny 2', 'title bar follows the game');
+    await w.evaluate(() => { window.__cards = [...document.querySelectorAll('#libgrid .clip')]; });
+    await w.click('.game:has-text("Destiny 2")'); await w.waitForTimeout(500);
+    check(await w.$eval('#libname', e => e.textContent) === 'All clips', 'clicking the game you are on goes back to all clips');
+    await w.evaluate(() => { window.__cards = [...document.querySelectorAll('#libgrid .clip')]; });
+    await w.click('.game:has-text("All clips")'); await w.waitForTimeout(400);
+    check(await w.evaluate(() => [...document.querySelectorAll('#libgrid .clip')].every(c => window.__cards.includes(c))), 'clicking All clips again changes nothing');
+    await w.click('.game:has-text("Destiny 2")'); await w.waitForTimeout(500);
     await w.click('.clip >> nth=0'); await w.waitForSelector('#qt.on'); await w.waitForTimeout(1000);
     const first = await w.$eval('#qtname', e => e.textContent);
     await w.click('#qtnext'); await w.waitForTimeout(1200);
@@ -64,6 +71,20 @@ const { launch, checker, bigLibrary } = require('./helpers');
     check(await w.$eval('#qt', e => e.hidden), 'clicking outside closes the editor');
     await w.click('#navback'); await w.waitForTimeout(600);
     check(await w.$eval('#qt', e => e.hidden), 'back skips closed clips');
+
+    // dragging a card out: main starts a drag with the clip's file (untouched clip: the clip itself)
+    await run.app.evaluate(({ BrowserWindow }) => { const wc = BrowserWindow.getAllWindows()[0].webContents; global.__drags = []; wc.startDrag = o => global.__drags.push(o.file); });
+    await w.evaluate(() => { const el = [...document.querySelectorAll('#libgrid .clip')].find(x => !x._clip.edit && !x._clip.title); el.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true })); window.__dragged = el._clip.path; });
+    await w.waitForTimeout(500);
+    const drags = await run.app.evaluate(() => global.__drags);
+    check(drags.length === 1 && drags[0] === await w.evaluate(() => window.__dragged), 'dragging an untouched card starts a drag of the clip', drags);
+    // clicking the game you're on goes back to all clips; clicking All clips again does nothing
+    await w.click('.game:has-text("Destiny 2")'); await w.waitForTimeout(400);
+    await w.click('.game:has-text("Destiny 2")'); await w.waitForTimeout(400);
+    check(await w.$eval('#libname', e => e.textContent) === 'All clips', 'clicking the current game shows all clips');
+    const before2 = await w.evaluate(() => { window.__cards = [...document.querySelectorAll('#libgrid .clip')]; return window.__cards.length; });
+    await w.click('.game:has-text("All clips")'); await w.waitForTimeout(400);
+    check(await w.evaluate(() => [...document.querySelectorAll('#libgrid .clip')].every(x => window.__cards.includes(x))) && before2 > 0, 'clicking All clips again leaves the cards alone');
 
     // settings is an overlay; Escape closes it
     await w.click('#appmenu'); await w.waitForTimeout(200); await w.hover('#ctxmenu >> text=File'); await w.waitForTimeout(200); await w.click('#ctxsub >> text=Settings'); await w.waitForTimeout(500);
