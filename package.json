@@ -4,7 +4,7 @@
   "version": "1.44.0",
   "description": "Trim and share video clips",
   "main": "main.js",
-  "author": "EchoCR772",
+  "author": "Echo",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
