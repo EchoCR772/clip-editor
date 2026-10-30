@@ -57,7 +57,11 @@ $('libtab').onclick = () => showLibrary();
 $('navback').onclick = () => navInput(-1, true);
 $('navfwd').onclick = () => navInput(1, true);
 let appVersion = '';
-T.settingsGet().then(r => { if (r.ok) appVersion = r.version; });
+T.settingsGet().then(r => { if (r.ok) { appVersion = r.version; L.deleteMode = r.deleteMode; } });
+// the test copy says so, in the title bar and the window title
+window.APP_TITLE = T.isTest ? `${T.appName} (Test build)` : T.appName;
+if (T.isTest) $('testbadge').hidden = false;
+document.title = window.APP_TITLE;
 // every shortcut, in a dialog like Discord's
 // ---------- updates ----------
 // Ask first (default): a soft "Update available" button in the title bar opens what's new with
@@ -244,7 +248,7 @@ $('appmenu').onclick = e => {
   openMenu(r.left, r.bottom + 6, [
     { text: 'File', sub: [
       { text: 'Open Video...', hint: 'Ctrl+O', run: () => pickFile() },
-      { text: 'Add Clips Folder...', run: async () => { const x = await T.libAddFolder(); if (!x.ok) libToast(x.error, 'err'); else if (x.changed) { L.dirty = true; loadLibrary(); libToast('Folder added.'); } } },
+      { text: 'Add Clips Folder...', run: async () => folderAdded(await T.libAddFolder()) },
       { text: 'Open Trimmed Folder', run: async () => { const x = await T.exportOpenDir(); if (!x.ok) libToast(x.error, 'err'); } },
       '-',
       { text: 'Settings', hint: 'Ctrl+Comma', run: () => openSettings() },
@@ -302,7 +306,7 @@ function showLibrary() {
   if (window.qtHide) window.qtHide();
   $('libtab').classList.add('active');
   if (L.dirty || !L.data) loadLibrary();
-  document.title = T.appName;
+  document.title = window.APP_TITLE;
   navCommit();
 }
 
@@ -311,7 +315,7 @@ const H = { list: [], i: -1, applying: false, timer: 0 };
 function navState() {
   const p = window.qtActivePath && window.qtActivePath();
   if (p) return { clip: p };
-  return { game: L.game, folders: L.folders };
+  return { game: L.game }; // the folder checkboxes are a filter, not a place: back/forward leaves them alone
 }
 // record where we are; several changes in one go (open a clip -> switch tab) become one step
 function navCommit() {
@@ -342,8 +346,10 @@ function navGo(d) {
     try {
       if (s.clip) window.qtActivatePath(s.clip);
       else {
-        const changed = L.game !== s.game || JSON.stringify(L.folders) !== JSON.stringify(s.folders);
-        L.game = s.game; L.folders = s.folders;
+        // a game that has no clips in the ticked folders any more falls back to All clips
+        const game = s.game === 'all' || !L.data || L.data.clips.some(c => c.game === s.game && inFolders(c)) ? s.game : 'all';
+        const changed = L.game !== game;
+        L.game = game;
         showLibrary();
         if (changed && L.data) { saveLibPrefs(); renderSide(); renderGrid(true); }
       }
@@ -410,6 +416,113 @@ function renderLibrary(update) {
   renderGrid(false, update);
 }
 
+// right-click a folder in the Folders panel
+function folderMenu(e, f) {
+  e.preventDefault(); e.stopPropagation();
+  const items = [{ text: 'Open in File Explorer', run: async () => { const x = await T.libOpenFolder(f.path); if (!x.ok) libToast(x.error, 'err'); } }];
+  if (f.kind === 'trimmed') items.push({ text: 'Change Folder...', run: async () => { const x = await T.exportPickDir(); if (!x.ok) libToast(x.error, 'err'); L.dirty = true; loadLibrary(); } });
+  else {
+    if (f.kind === 'folder') items.push({ text: 'Send Recording Software Info...', run: () => reportBox(f.path) });
+    items.push('-', { text: 'Remove from Library', cls: 'danger', run: () => removeFolder(f) });
+  }
+  openMenu(e.clientX, e.clientY, items);
+}
+// nothing is deleted: the folder just stops showing up (NVIDIA/Discord come back with "Use the detected folders")
+async function removeFolder(f) {
+  const x = await T.libRemoveFolder(f.path);
+  if (!x.ok) { libToast(x.error, 'err'); return; }
+  if (L.folders) { L.folders = L.folders.filter(p => !samePathR(p, f.path)); saveLibPrefs(); }
+  libToast(`Removed ${srcLabel(f)} from your library. Nothing was deleted.`);
+  L.dirty = true;
+  await loadLibrary();
+}
+
+// ---------- adding folders, and the optional "help add this recording software" card ----------
+async function folderAdded(x) {
+  if (!x || !x.ok) { if (x && x.error) libToast(x.error, 'err'); return; }
+  if (x.already) { libToast('That folder is already in your library.'); return; }
+  if (!x.changed) return;
+  // a new folder is ticked right away (when only some folders are ticked)
+  if (L.folders && x.added && !L.folders.some(p => samePathR(p, x.added))) { L.folders.push(x.added); saveLibPrefs(); }
+  libToast('Folder added.');
+  L.dirty = true;
+  await loadLibrary();
+  if (x.added) reportCard(x.added);
+}
+window.folderAdded = folderAdded;
+// A small card beside the new folder's row: easy to ignore (fades after 15 s), ✕ closes it for good.
+async function reportCard(dir) {
+  const f = liveFolders().find(x => samePathR(x.path, dir));
+  if (!f || f.kind !== 'folder') return; // NVIDIA, Discord and the trimmed folder are known already
+  const r = await T.reportCard(dir);
+  if (!r.ok || !r.show) return;
+  if (!$('setov').hidden) { L.pendingCard = dir; return; }
+  document.querySelectorAll('.rcard').forEach(e => e.remove());
+  if (!L.side.collapsed && !L.folderOpen) { L.folderOpen = true; $('folderbox').classList.add('open'); }
+  const card = h('div', 'rcard');
+  const x = h('button', 'rc-x'); x.append(icoSpan('x')); x.title = "Don't show this again";
+  const see = h('button', 'btn sm primary', "See what's sent");
+  const btns = h('div', 'rc-btns'); btns.append(see);
+  card.append(x, h('div', 'rc-title', 'Help add this recording software?'),
+    h('div', 'rc-text', `Send how ${srcLabel(f)} stores its clips, so Clip Editor can find it automatically for everyone. You'll see exactly what's sent first.`), btns);
+  document.body.append(card);
+  const place = () => {
+    const row = [...document.querySelectorAll('#folderlist .frow')].find(e => samePathR(e.title, dir));
+    const side = $('libside').getBoundingClientRect();
+    const rr = row && row.offsetParent ? row.getBoundingClientRect() : null;
+    card.style.left = side.right + 12 + 'px';
+    card.style.top = Math.max(52, Math.min(window.innerHeight - card.offsetHeight - 12, rr ? rr.top + rr.height / 2 - 28 : 110)) + 'px';
+  };
+  setTimeout(() => { place(); card.classList.add('on'); }, 260); // after the Folders panel slides open
+  let timer = setTimeout(close, 15000);
+  card.addEventListener('pointerenter', () => clearTimeout(timer));
+  card.addEventListener('pointerleave', () => { timer = setTimeout(close, 6000); });
+  function close() { card.classList.remove('on'); setTimeout(() => card.remove(), 200); window.removeEventListener('resize', place); }
+  window.addEventListener('resize', place);
+  x.onclick = () => { T.reportCard(dir, 'dismiss'); close(); };
+  see.onclick = () => { close(); reportBox(dir); };
+}
+// The preview: the exact text that would be sent, the software's name (editable), Send / Cancel.
+async function reportBox(dir) {
+  hideMenu(); hideTip();
+  const ov = h('div', 'modal-ov'), box = h('div', 'modal wide report');
+  const x = h('button', 'modal-x'); x.append(icoSpan('x'));
+  const body = h('div', 'modal-body');
+  body.append(h('p', '', 'Reading the folder...'));
+  const row = h('div', 'modal-btns');
+  const cancel = h('button', 'mbtn', 'Cancel'), send = h('button', 'mbtn primary', 'Send');
+  send.disabled = true;
+  row.append(cancel, send);
+  box.append(x, h('h2', '', 'Send recording software info?'), body, row);
+  ov.append(box); document.body.append(ov);
+  requestAnimationFrame(() => ov.classList.add('on'));
+  const done = () => { document.removeEventListener('keydown', key, true); ov.classList.remove('on'); setTimeout(() => ov.remove(), 160); };
+  const key = e => { if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') { e.preventDefault(); done(); } e.stopPropagation(); return; } e.stopPropagation(); if (e.key === 'Escape') { e.preventDefault(); done(); } };
+  document.addEventListener('keydown', key, true);
+  cancel.onclick = done; x.onclick = done;
+  ov.addEventListener('pointerdown', e => { if (e.target === ov && e.button === 0) done(); });
+  const r = await T.reportBuild(dir);
+  if (!r.ok) { body.replaceChildren(h('p', '', r.error)); send.remove(); cancel.textContent = 'Close'; row.style.gridTemplateColumns = '1fr'; return; }
+  const name = h('input', 'modal-in');
+  name.type = 'text'; name.value = r.recorder; name.placeholder = 'Which recording software is this? (e.g. SteelSeries Moments)'; name.maxLength = 100; name.spellcheck = false;
+  const pre = h('pre', 'report-pre', r.text);
+  body.replaceChildren(
+    h('p', '', 'This is everything that gets sent. It helps add automatic folder detection for this software in a later version.'),
+    h('div', 'report-label', 'Recording software'), name,
+    h('div', 'report-label', `App version: ${r.version}`),
+    h('div', 'report-label', 'Folder details'), pre,
+    h('p', 'report-note', 'Your Windows username is replaced with %USERNAME%. No clips, pictures or other personal info are sent.'));
+  send.disabled = false;
+  if (!r.recorder) name.focus();
+  send.onclick = async () => {
+    send.disabled = true; send.textContent = 'Sending...';
+    const y = await T.reportSend(dir, name.value.trim(), r.text);
+    if (!y.ok) { send.disabled = false; send.textContent = 'Send'; libToast(y.error, 'err'); return; }
+    done(); libToast('Sent. Thanks for helping!');
+    if (!$('setov').hidden) renderSettings();
+  };
+}
+
 // ---------- which folders count (the Folders button in the sidebar) ----------
 const liveFolders = () => (L.data ? L.data.folders.filter(f => !f.missing) : []);
 // the chosen folders' paths: by default everything except the Trimmed folder
@@ -433,6 +546,7 @@ function renderFolders() {
     row.title = f.path;
     const box2 = h('span', 'fchk'); box2.append(icoSpan('check'));
     row.append(box2, iconAvatar(look.icon, look.color, look.img), h('span', 'fname', srcLabel(f)), h('span', 'fcount', String(n)));
+    row.oncontextmenu = e => folderMenu(e, f);
     row.onclick = () => {
       let next = chosen.slice();
       if (on) { if (next.length === 1) return; next = next.filter(p => !samePathR(p, f.path)); } // at least one stays on
@@ -440,7 +554,6 @@ function renderFolders() {
       L.folders = next;
       saveLibPrefs();
       renderLibrary();
-      navCommit();
     };
     box.append(row);
   }
@@ -449,11 +562,7 @@ function renderFolders() {
   const plus = h('span', 'fplus'); plus.append(icoSpan('plus'));
   add.append(h('span', 'fspace'), plus, h('span', 'fname', 'Add folder'));
   add.title = 'Add a folder with clips';
-  add.onclick = async () => {
-    const x = await T.libAddFolder();
-    if (!x.ok) libToast(x.error, 'err');
-    else if (x.changed) { L.dirty = true; loadLibrary(); libToast('Folder added.'); }
-  };
+  add.onclick = async () => folderAdded(await T.libAddFolder());
   box.append(add);
   const all = live.length && chosen.length === live.length;
   $('foldertext').textContent = !live.length ? 'No folders' : all ? 'All folders'
@@ -610,8 +719,8 @@ function gamesOf(clips) {
 
 function renderSide() {
   const d = L.data;
-  const box = $('games');
-  box.replaceChildren();
+  const top = $('sidefixed'), box = $('games');
+  top.replaceChildren(); box.replaceChildren();
   const row = (name, count, av, on, click, title) => {
     const r = h('div', 'game' + (on ? ' on' : ''));
     // collapsed sidebar: the name pops up right next to the picture, straight away (like Discord)
@@ -631,10 +740,11 @@ function renderSide() {
     L.game = key; saveLibPrefs(); renderSide(); renderGrid(true); showLibrary();
   };
   const here = d.clips.filter(inFolders);
-  box.append(row('All clips', here.length, iconAvatar('grid', '#1a191c'), L.game === 'all', pick('all')));
+  // All clips stays put above the games, which scroll on their own; a line separates them
+  top.append(row('All clips', here.length, iconAvatar('grid', '#1a191c'), L.game === 'all', pick('all')));
   // games with no clips in the chosen folders aren't listed
   const games = gamesOf(here);
-  if (games.length) box.append(h('div', 'gsec', 'Games'));
+  if (games.length) top.append(h('div', 'gdiv'));
   for (const g of games) {
     const r = row(g.name, g.count, avatar(g.name, g.latestPath), L.game === g.key, pick(g.key));
     r.addEventListener('contextmenu', e => gameMenu(e, g));
@@ -847,7 +957,7 @@ function card(c, wave) {
   bottom.append(h('div', 'ctitle'));
   const subrow = h('div', 'csubrow');
   subrow.append(h('span', 'csub'), h('span', 'cdur'));
-  bottom.append(subrow);
+  bottom.append(subrow, h('div', 'cfile')); // the actual file name, on every card
   const hb = h('div', 'hbar');
   const trk = h('div', 'trk'); trk.append(h('div', 'fill'));
   trk.addEventListener('pointerdown', e => { e.stopPropagation(); seekPreview(el, el._clip, e); });
@@ -885,6 +995,7 @@ function refreshCard(el, c) {
   el.querySelector('.ctitle').title = c.name;
   const sub = [L.game === 'all' ? c.gameName : '', c.sub, fmtSize(c.size)].filter(Boolean).join('  ·  ');
   el.querySelector('.csub').textContent = sub;
+  el.querySelector('.cfile').textContent = c.name;
   setLength(el.querySelector('.cdur'), c);
   const b = el.querySelector('.ckind');
   b.replaceChildren();
@@ -915,11 +1026,64 @@ function dragOut(e, c) {
     T.dragPrepare(c.path).then(r => { if (r.ok) libToast('Ready. Drag it again.'); else libToast(r.error, 'err'); });
     return;
   }
-  // our own window shouldn't offer "Drop to edit" for it
+  // our own window shouldn't offer "Drop to edit" for it; the card lifts away while it's dragged
+  const card = e.currentTarget && e.currentTarget.classList && e.currentTarget.classList.contains('clip') ? e.currentTarget : null;
   document.body.classList.add('dragout');
-  const done = () => { document.body.classList.remove('dragout'); window.removeEventListener('pointermove', done); };
+  if (card) card.classList.add('lifted');
+  const done = () => { document.body.classList.remove('dragout'); if (card) card.classList.remove('lifted'); window.removeEventListener('pointermove', done); };
   setTimeout(() => window.addEventListener('pointermove', done), 300);
-  T.dragStart(c.path, file);
+  T.dragStart(c.path, file, dragPicture(c, card));
+}
+// The picture under the mouse while dragging a clip out: a small version of its card (frame, name
+// in up to two lines, length), drawn at twice the size so it's sharp on high-DPI screens. It's as wide
+// as Windows' drag picture can be, which leaves no room for the file path Electron would add beside it.
+const DRAG_W = 150, DRAG_H = 112;
+function dragPicture(c, card) {
+  try {
+    const S = 2, W = DRAG_W * S, H = DRAG_H * S, R = 10 * S;
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const g = cv.getContext('2d');
+    const round = () => { g.beginPath(); g.moveTo(R, 0); g.arcTo(W, 0, W, H, R); g.arcTo(W, H, 0, H, R); g.arcTo(0, H, 0, 0, R); g.arcTo(0, 0, W, 0, R); g.closePath(); };
+    round(); g.save(); g.clip();
+    g.fillStyle = '#1a191c'; g.fillRect(0, 0, W, H);
+    const img = card && card.querySelector(':scope > img');
+    if (img && img.naturalWidth) { // cover
+      const k = Math.max(W / img.naturalWidth, H / img.naturalHeight), iw = img.naturalWidth * k, ih = img.naturalHeight * k;
+      g.drawImage(img, (W - iw) / 2, (H - ih) / 2, iw, ih);
+    }
+    const grad = g.createLinearGradient(0, H * 0.35, 0, H);
+    grad.addColorStop(0, 'rgba(0,0,0,0)'); grad.addColorStop(1, 'rgba(0,0,0,.85)');
+    g.fillStyle = grad; g.fillRect(0, 0, W, H);
+    // name: one line if it fits, else two balanced lines (split after a comma when there is one);
+    // only a very long name gets "..."
+    const pad = 9 * S, maxW = W - pad * 2;
+    const fit = (txt, w) => { if (g.measureText(txt).width <= w) return txt; while (txt.length > 1 && g.measureText(txt + '...').width > w) txt = txt.slice(0, -1); const sp = txt.lastIndexOf(' '); if (sp > txt.length - 12 && sp > 0) txt = txt.slice(0, sp); return txt.replace(/[\s,.:;·-]+$/, '') + '...'; };
+    g.font = `600 ${12 * S}px Inter, "Segoe UI", sans-serif`;
+    const name = clipTitle(c);
+    let lines = [name];
+    if (g.measureText(name).width > maxW) {
+      const words = name.split(/\s+/);
+      let best = null;
+      for (let i = 1; i < words.length; i++) { // the split that keeps both lines inside and closest in length
+        const a = words.slice(0, i).join(' '), b = words.slice(i).join(' ');
+        const wa = g.measureText(a).width, wb = g.measureText(b).width;
+        let score = Math.abs(wa - wb) + (/,$/.test(a) ? -100 * S : 0) + (wa > maxW ? 1e6 : 0) + (wb > maxW ? 1e5 : 0);
+        if (!best || score < best.score) best = { a, b, score };
+      }
+      lines = best ? [fit(best.a, maxW), fit(best.b, maxW)] : [fit(name, maxW)];
+    }
+    const lh = 15 * S, metaY = H - pad;
+    // under the name: the length (or trimmed length), and the game when there's room
+    const t = trimOf(c), len = (t ? '✂ ' : '') + fmtLen(t ? t.b - t.a : c.duration || 0);
+    g.font = `500 ${10.5 * S}px Inter, "Segoe UI", sans-serif`; g.fillStyle = 'rgba(255,255,255,.75)';
+    const withGame = c.gameName ? len + '  ·  ' + c.gameName : len;
+    g.fillText(g.measureText(withGame).width <= maxW ? withGame : c.gameName ? fit(withGame, maxW) : len, pad, metaY);
+    g.font = `600 ${12 * S}px Inter, "Segoe UI", sans-serif`; g.fillStyle = '#fff';
+    lines.forEach((ln, i) => g.fillText(ln, pad, metaY - 14 * S - (lines.length - 1 - i) * lh));
+    g.restore();
+    round(); g.lineWidth = S; g.strokeStyle = 'rgba(255,255,255,.14)'; g.stroke();
+    return cv.toDataURL('image/png');
+  } catch (err) { return null; }
 }
 
 // ---------- saved trims on cards ----------
@@ -1203,7 +1367,19 @@ function showMenu(x, y, c, el) {
 }
 const MENU_BUTTONS = ['appmenu', 'libsort', 'qtsavemenu', 'qtcopymenu', 'qtmore']; // buttons that open a menu; clicking one again closes it
 function hideMenu() { $('ctxmenu').hidden = true; closeSub(); for (const id of MENU_BUTTONS) { const b = $(id); if (b) b.classList.remove('open'); } }
-document.addEventListener('pointerdown', e => { if (!$('ctxmenu').contains(e.target) && !($('ctxsub') && $('ctxsub').contains(e.target)) && !e.target.closest(MENU_BUTTONS.map(id => '#' + id).join(', '))) hideMenu(); });
+// While any menu is open, a click outside it only closes it (like Discord): clicking the button that
+// opened it closes it, and clicking a card doesn't also open the clip. Every menu goes through
+// openMenu/#ctxmenu, so this covers all of them. A right-click elsewhere still opens that menu.
+document.addEventListener('pointerdown', e => {
+  const m = $('ctxmenu'), sub = $('ctxsub');
+  if (m.hidden || m.contains(e.target) || (sub && sub.contains(e.target))) return;
+  hideMenu();
+  if (e.button !== 0) return;
+  e.stopPropagation();
+  const eat = ev => { ev.stopPropagation(); ev.preventDefault(); };
+  window.addEventListener('click', eat, { capture: true, once: true });
+  setTimeout(() => window.removeEventListener('click', eat, true), 600);
+}, true);
 window.addEventListener('blur', hideMenu);
 
 // ---------- rename (only in the app; the file keeps its name) ----------
@@ -1220,7 +1396,7 @@ async function setClipTitle(c, t) {
   if (window.qtTitleChanged) window.qtTitleChanged(c.path, r.title);
 }
 
-// everything goes to the Recycle Bin, and main asks first
+// after deleting clips or a game folder (Recycle Bin or for good, per Settings)
 function afterTrash(r, what) {
   if (!r.ok) { libToast(r.error, 'err'); return false; }
   if (r.cancelled) return false;
@@ -1231,14 +1407,10 @@ function afterTrash(r, what) {
   renderLibrary(true);
   showSel();
   if (r.failed && r.failed.length) libToast(`Couldn't delete: ${r.failed.join('; ')}`, 'err');
-  else libToast(`Moved ${what} to the Recycle Bin.`);
+  else libToast(r.permanent ? `Deleted ${what}.` : `Moved ${what} to the Recycle Bin.`);
   return true;
 }
-// ---------- confirm before deleting (styled like Discord's); hold Shift to skip it ----------
-let shiftHeld = false;
-window.addEventListener('keydown', e => { if (e.key === 'Shift') shiftHeld = true; }, true);
-window.addEventListener('keyup', e => { if (e.key === 'Shift') shiftHeld = false; }, true);
-window.addEventListener('blur', () => { shiftHeld = false; });
+// ---------- confirm before deleting (styled like Discord's) ----------
 
 // a Discord-style dialog; with `value` it has a text box and resolves to its text (null = cancelled)
 function confirmBox({ title, body, ok = 'Delete', danger = true, value, placeholder }) {
@@ -1285,10 +1457,11 @@ async function trashClips(list) {
   if (!list.length) return;
   stopPreview();
   const n = list.length, size = fmtSize(list.reduce((s, c) => s + c.size, 0));
-  if (!shiftHeld && !(await confirmBox({
+  if (!(await confirmBox({
     title: n === 1 ? 'Delete this clip?' : `Delete ${n} clips?`,
-    body: n === 1 ? `This moves the clip (${size}) to the Recycle Bin, so you can still get it back. Hold Shift to delete without asking.`
-      : `This moves ${n} clips (${size}) to the Recycle Bin, so you can still get them back. Hold Shift to delete without asking.`,
+    body: L.deleteMode === 'delete'
+      ? (n === 1 ? `The clip (${size}) will be permanently deleted.` : `${n} clips (${size}) will be permanently deleted.`)
+      : (n === 1 ? `This moves the clip (${size}) to the Recycle Bin, so you can still get it back.` : `This moves ${n} clips (${size}) to the Recycle Bin, so you can still get them back.`),
   }))) return;
   const paths = list.map(c => c.path);
   if (window.qtCloseTabsFor) await window.qtCloseTabsFor(paths, []);
@@ -1315,16 +1488,16 @@ function gameMenu(e, g) {
   items.push('-');
   if (dirs.size && !loose) {
     items.push({ icon: 'trash', cls: 'danger', text: `Delete folder${dirs.size > 1 ? 's' : ''}`, run: async () => {
-      if (!shiftHeld) {
-        const st = await T.libFolderStats([...dirs]);
-        if (!st.ok) return libToast(st.error, 'err');
-        const what = [`${st.videos} video${st.videos === 1 ? '' : 's'}`];
-        if (st.other) what.push(`${st.other} other file${st.other === 1 ? '' : 's'} (screenshots and such)`);
-        if (!(await confirmBox({
-          title: `Delete the ${g.name} folder${dirs.size > 1 ? 's' : ''}?`,
-          body: `Everything in it goes to the Recycle Bin: ${what.join(' and ')}, ${fmtSize(st.bytes)}. You can still get it back from there.`,
-        }))) return;
-      }
+      const st = await T.libFolderStats([...dirs]);
+      if (!st.ok) return libToast(st.error, 'err');
+      const what = [`${st.videos} video${st.videos === 1 ? '' : 's'}`];
+      if (st.other) what.push(`${st.other} other file${st.other === 1 ? '' : 's'} (screenshots and such)`);
+      if (!(await confirmBox({
+        title: `Delete the ${g.name} folder${dirs.size > 1 ? 's' : ''}?`,
+        body: L.deleteMode === 'delete'
+          ? `Everything in it will be permanently deleted: ${what.join(' and ')}, ${fmtSize(st.bytes)}.`
+          : `Everything in it goes to the Recycle Bin: ${what.join(' and ')}, ${fmtSize(st.bytes)}. You can still get it back from there.`,
+      }))) return;
       if (window.qtCloseTabsFor) await window.qtCloseTabsFor([], [...dirs]);
       if (afterTrash(await T.libTrashFolders([...dirs], g.name, true), `the ${g.name} folder${dirs.size > 1 ? 's' : ''}`) && L.game === g.key) {
         L.game = 'all'; saveLibPrefs(); renderSide(); renderGrid(true);
@@ -1410,7 +1583,10 @@ function closeSettings() {
   const ov = $('setov');
   if (ov.hidden) return;
   ov.classList.remove('on');
-  setTimeout(() => { if (!ov.classList.contains('on')) ov.hidden = true; }, 160);
+  setTimeout(() => {
+    if (!ov.classList.contains('on')) ov.hidden = true;
+    if (L.pendingCard) { const d = L.pendingCard; L.pendingCard = null; reportCard(d); }
+  }, 160);
   if (L.dirty) loadLibrary();
 }
 $('setclose').onclick = closeSettings;
@@ -1452,7 +1628,7 @@ async function renderSettings() {
   fs.append(list);
   const btns = h('div', 'setbtns');
   const add = h('button', 'btn sm'); add.append(icoSpan('plus'), document.createTextNode('Add folder'));
-  add.onclick = () => after(() => T.libAddFolder());
+  add.onclick = async () => { await folderAdded(await T.libAddFolder()); L.thumbs.clear(); renderSettings(); };
   btns.append(add);
   if (r.custom && r.detected.length) {
     const reset = h('button', 'btn sm ghost', 'Use the detected folders');
@@ -1519,6 +1695,19 @@ async function renderSettings() {
   card.append(row);
   ds.append(card);
 
+  // deleting
+  L.deleteMode = r.deleteMode;
+  const dls = section('Deleting', 'What Delete does with clips and game folders. You are always asked first.');
+  const dlc = h('div', 'setcard');
+  for (const [id, name, note] of [['recycle', 'Move to the Recycle Bin', 'You can still get them back from the Recycle Bin.'], ['delete', 'Delete permanently', 'Gone right away, and the space is freed. They can\'t be brought back.']]) {
+    const row = h('button', 'setrow setopt' + (r.deleteMode === id ? ' on' : ''));
+    const t = h('div', 'settext'); t.append(h('div', 'setname', name), h('div', 'setpath wrap', note));
+    row.append(h('span', 'radio'), t);
+    row.onclick = async () => { if (r.deleteMode === id) return; await T.settingsSet({ deleteMode: id }); renderSettings(); };
+    dlc.append(row);
+  }
+  dls.append(dlc);
+
   // updates
   const us = section('Updates', 'New versions come from the GitHub releases page.');
   const uc = h('div', 'setcard');
@@ -1565,16 +1754,41 @@ async function renderSettings() {
     etxt.replaceChildren(h('div', 'setname', list.length ? `${list.length} empty folder${list.length === 1 ? '' : 's'}` : 'No empty folders'));
     if (list.length) {
       etxt.append(h('div', 'setpath wrap', list.map(folderName).join(', ')));
-      const b = h('button', 'btn sm ghost', 'Move to Recycle Bin');
+      const b = h('button', 'btn sm ghost', 'Delete');
       b.onclick = async () => {
         if (!(await confirmBox({
           title: `Delete ${list.length} empty folder${list.length === 1 ? '' : 's'}?`,
-          body: `${list.map(folderName).join(', ')}. They have no files in them, and NVIDIA makes them again if you record that game.`,
+          body: `${list.map(folderName).join(', ')}. There are no files in them, and NVIDIA makes them again if you record that game.`,
         }))) return;
         const y = await T.libTrashEmpty(true);
-        if (!y.ok) libToast(y.error, 'err'); else if (!y.cancelled) { L.dirty = true; renderSettings(); }
+        if (!y.ok) libToast(y.error, 'err');
+        else {
+          libToast(y.failed.length ? `Deleted ${y.deleted.length}. Skipped (not empty any more): ${y.failed.join(', ')}` : `Deleted ${y.deleted.length} empty folder${y.deleted.length === 1 ? '' : 's'}.`, y.failed.length ? 'err' : '');
+          L.dirty = true; renderSettings();
+        }
       };
       erow.append(b);
+    }
+  });
+
+  // help add recording software (optional)
+  const rs = section('Help add recording software', "Optional. If the app didn't find your recording software's folder by itself, you can send how that software stores its clips, so a later version finds it automatically for everyone. You'll see exactly what's sent before anything goes out.");
+  const rc = h('div', 'setcard');
+  const rrow = h('div', 'setrow');
+  rrow.append(h('div', 'settext', 'Looking at your folders...'));
+  rc.append(rrow);
+  rs.append(rc);
+  T.reportFolders().then(x => {
+    rc.replaceChildren();
+    const list = (x.ok && x.folders) || [];
+    if (!list.length) { const row = h('div', 'setrow'); const t = h('div', 'settext'); t.append(h('div', 'setpath wrap', 'Add your recording software\'s folder first (Folders > Add folder in the sidebar).')); row.append(t); rc.append(row); return; }
+    for (const f of list) {
+      const row = h('div', 'setrow');
+      const t = h('div', 'settext'); t.append(h('div', 'setname', f.guess || folderName(f.path)), h('div', 'setpath', f.path));
+      const b = h('button', 'btn sm ' + (f.reported ? 'ghost' : ''), f.reported ? 'Sent · send again' : 'Send info...');
+      b.onclick = () => reportBox(f.path);
+      row.append(iconAvatar('folder', '#4e5058'), t, b);
+      rc.append(row);
     }
   });
 

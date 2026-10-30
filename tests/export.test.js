@@ -72,11 +72,12 @@ const cleanDecode = f => { try { execFileSync('/usr/bin/ffmpeg', ['-v', 'error',
     await w.click('#qttitle'); await w.fill('#qttitlein', 'Keeper'); await w.press('#qttitlein', 'Enter'); await w.waitForTimeout(500);
     const before = FFPROBE ? probe(dcClip) : null;
     await setTrim('1', '5');
-    await w.evaluate(() => { shiftHeld = true; });
     await w.click('#qtsavemenu'); await w.waitForTimeout(200);
     await w.click('#ctxmenu >> text=Replace original');
+    await w.waitForSelector('.modal-ov.on .mbtn.danger');
+    check(!/Shift/.test(await w.$eval('.modal-ov.on .modal', e => e.textContent)), 'no Shift hint in the Replace dialog');
+    await w.click('.modal-ov.on .mbtn.danger');
     await waitStatus(/Original replaced|Couldn't/);
-    await w.evaluate(() => { shiftHeld = false; });
     check(/Original replaced/.test(await statusText()), 'replaced', await statusText());
     if (FFPROBE) {
       const p = probe(dcClip);

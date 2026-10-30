@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('trimmer', {
   appName: ipcRenderer.sendSync('app-name'),
+  isTest: ipcRenderer.sendSync('is-test'),
   pick: () => ipcRenderer.invoke('pick'),
   openPath: p => ipcRenderer.invoke('open-path', p),
   pathKind: p => ipcRenderer.invoke('path-kind', p),
@@ -43,7 +44,7 @@ contextBridge.exposeInMainWorld('trimmer', {
   personName: (id, name) => ipcRenderer.invoke('person-name', id, name),
   dragPrepare: p => ipcRenderer.invoke('drag-prepare', p),
   dragReady: p => ipcRenderer.sendSync('drag-ready', p),
-  dragStart: (p, file) => ipcRenderer.send('drag-start', p, file),
+  dragStart: (p, file, picture) => ipcRenderer.send('drag-start', p, file, picture),
   onQtProgress: cb => ipcRenderer.on('qt-progress', (_e, p) => cb(p)),
   settingsGet: () => ipcRenderer.invoke('settings-get'),
   oldTrims: () => ipcRenderer.invoke('old-trims'),
@@ -59,6 +60,10 @@ contextBridge.exposeInMainWorld('trimmer', {
   updateDownload: () => ipcRenderer.invoke('update-download'),
   updateLater: () => ipcRenderer.invoke('update-later'),
   changelog: () => ipcRenderer.invoke('changelog'),
+  reportBuild: dir => ipcRenderer.invoke('report-build', dir),
+  reportSend: (dir, recorder, text) => ipcRenderer.invoke('report-send', dir, recorder, text),
+  reportCard: (dir, action) => ipcRenderer.invoke('report-card', dir, action),
+  reportFolders: () => ipcRenderer.invoke('report-folders'),
   onUpdate: cb => ipcRenderer.on('update', (_e, u) => cb(u)),
   openUrl: url => ipcRenderer.invoke('open-url', url),
   whatsNew: () => ipcRenderer.invoke('whats-new'),

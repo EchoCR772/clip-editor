@@ -13,6 +13,7 @@ const { launch, checker, bigLibrary } = require('./helpers');
     check(await w.$eval('.clip >> nth=0', e => [...e.querySelectorAll('.hbtn')].map(x => x.innerText.trim()).join('|')) === 'Trim|Copy Video', 'card buttons');
     const lens = await w.$$eval('#libgrid .clip', els => els.map(e => [e._clip.name, e.querySelector('.cdur').textContent]));
     check(lens.every(([n, l]) => /^\d+:\d\d$/.test(l)), 'every card shows its length', lens.filter(([n, l]) => !/^\d+:\d\d$/.test(l)));
+    check(await w.$$eval('#libgrid .clip', els => els.every(e => e.querySelector('.cfile').textContent === e._clip.name && e._clip.name)), 'every card shows its file name');
     check(await w.$eval('#libname', e => e.textContent) === 'All clips', 'library tab name');
 
     // right-click menu and rename
@@ -22,6 +23,19 @@ const { launch, checker, bigLibrary } = require('./helpers');
     await w.click('#ctxmenu >> text=Rename'); await w.waitForTimeout(300);
     await w.fill('.modal-in', 'Best clip'); await w.keyboard.press('Enter'); await w.waitForTimeout(800);
     check(await w.$eval('.clip >> nth=0', e => e.querySelector('.ctitle').textContent) === 'Best clip', 'rename from the menu');
+
+    // any menu: clicking its button again closes it; clicking outside only closes it
+    await w.hover('.clip >> nth=0'); await w.waitForTimeout(300);
+    await w.click('.clip >> nth=0 >> .cact .cbtn >> nth=0'); await w.waitForTimeout(250);
+    check(await w.$eval('#ctxmenu', e => !e.hidden), 'card ... opens its menu');
+    await w.click('.clip >> nth=0 >> .cact .cbtn >> nth=0'); await w.waitForTimeout(250);
+    check(await w.$eval('#ctxmenu', e => e.hidden), 'clicking ... again closes the menu');
+    await w.click('.clip >> nth=0 >> .cact .cbtn >> nth=0'); await w.waitForTimeout(250);
+    await w.mouse.click(b.x, b.y); await w.waitForTimeout(600);
+    check(await w.$eval('#ctxmenu', e => e.hidden) && await w.$eval('#qt', e => e.hidden), 'clicking the card with a menu open only closes the menu');
+    await w.click('#appmenu'); await w.waitForTimeout(200);
+    await w.click('#appmenu'); await w.waitForTimeout(250);
+    check(await w.$eval('#ctxmenu', e => e.hidden), 'clicking ☰ again closes the app menu');
 
     // NEW: clips saved since the view was last left; opening one clears it
     await w.evaluate(() => { L.newSince = 1; L.viewKey = viewKey(); renderGrid(); });
@@ -42,6 +56,11 @@ const { launch, checker, bigLibrary } = require('./helpers');
     check(after.length < before && after.every(r => r === 'dc'), 'only the chosen folder', after);
     check(await w.$eval('#foldertext', e => e.textContent) === 'dc', 'folder button label', await w.$eval('#foldertext', e => e.textContent));
     check(await w.$eval('#folderlist', e => e.lastElementChild.classList.contains('fadd') && /Add folder/.test(e.lastElementChild.textContent)), 'Add folder row under the folders');
+    await w.click('.frow:has-text("dc")', { button: 'right' }); await w.waitForTimeout(200);
+    const fmenu = await w.$$eval('#ctxmenu button', els => els.map(e => e.innerText));
+    check(fmenu.includes('Open in File Explorer') && fmenu.includes('Remove from Library'), 'right-click a folder: Remove from Library', fmenu);
+    await w.keyboard.press('Escape'); await w.waitForTimeout(200);
+    check(await w.$eval('#testbadge', e => !e.hidden && e.textContent === 'Test build') && /Test build/.test(await w.title()), 'test copy is labelled');
     const games = await w.$$eval('.game .gname', e => e.map(x => x.textContent));
     check(!games.includes('Peak') && games.includes('Deadlock'), 'games without clips there are hidden', games);
     await w.click('.frow:has-text("dc")'); await w.waitForTimeout(300);
@@ -57,6 +76,20 @@ const { launch, checker, bigLibrary } = require('./helpers');
     await w.evaluate(() => { window.__cards = [...document.querySelectorAll('#libgrid .clip')]; });
     await w.click('.game:has-text("All clips")'); await w.waitForTimeout(400);
     check(await w.evaluate(() => [...document.querySelectorAll('#libgrid .clip')].every(c => window.__cards.includes(c))), 'clicking All clips again changes nothing');
+    // back/forward follows games but not the folder checkboxes
+    await w.click('.game:has-text("Destiny 2")'); await w.waitForTimeout(400);
+    const folderText = await w.$eval('#foldertext', e => e.textContent);
+    // untick the folder that doesn't hold Destiny 2's clips, so the game stays
+    const other = await w.evaluate(() => { const g = L.data.clips.find(c => c.gameName === 'Destiny 2'); return liveFolders().find(f => f.kind !== 'trimmed' && !samePathR(f.path, g.root)).path; });
+    const otherName = require('path').basename(other);
+    await w.click(`.frow:has-text("${otherName}")`); await w.waitForTimeout(400);
+    const ticked = await w.$eval('#foldertext', e => e.textContent);
+    await w.click('#navback'); await w.waitForTimeout(500);
+    check(await w.evaluate(() => L.game) === 'all' && await w.$eval('#foldertext', e => e.textContent) === ticked && ticked !== folderText, 'Back goes to the previous game and leaves the folder checkboxes alone', [ticked, folderText]);
+    await w.click('#navfwd'); await w.waitForTimeout(500);
+    check(await w.$eval('#libname', e => e.textContent) === 'Destiny 2', 'Forward goes to the game again');
+    await w.click(`.frow:has-text("${otherName}")`); await w.waitForTimeout(400); // tick it again
+    await w.click('.game:has-text("All clips")'); await w.waitForTimeout(400);
     await w.click('.game:has-text("Destiny 2")'); await w.waitForTimeout(500);
     await w.click('.clip >> nth=0'); await w.waitForSelector('#qt.on'); await w.waitForTimeout(1000);
     const first = await w.$eval('#qtname', e => e.textContent);
@@ -95,7 +128,7 @@ const { launch, checker, bigLibrary } = require('./helpers');
 
     // updates: Ask first by default; switching modes is saved
     await w.keyboard.press('Control+Comma'); await w.waitForTimeout(500);
-    const modes = await w.$$eval('.setopt', els => els.map(e => [e.querySelector('.setname').textContent, e.classList.contains('on')]));
+    const modes = await w.$$eval('.setsec:has(h3:text-is("Updates")) .setopt', els => els.map(e => [e.querySelector('.setname').textContent, e.classList.contains('on')]));
     check(JSON.stringify(modes) === JSON.stringify([['Ask first', true], ['Automatic', false], ['Off', false]]), 'update modes, Ask first by default', modes);
     await w.click('.setopt:has-text("Automatic")'); await w.waitForTimeout(400);
     check(await w.evaluate(async () => (await T.settingsGet()).updateMode) === 'auto', 'update mode saved');

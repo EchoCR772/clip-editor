@@ -195,7 +195,7 @@ function showHead() {
   $('qtsub').replaceChildren(...subParts(c));
   $('qtname').textContent = c.name;
   $('qtname').title = c.path;
-  document.title = clipTitle(c) + ' - ' + T.appName;
+  document.title = clipTitle(c) + ' - ' + (window.APP_TITLE || T.appName);
 }
 function subParts(c) {
   const f = L.data && c.root && L.data.folders.find(x => samePathR(x.path, c.root));
@@ -662,15 +662,15 @@ $('qtcopy').onclick = () => exportAs('video', 'clipboard');
 $('qtsave').onclick = () => exportAs('video', 'save');
 $('qtreveal').onclick = () => { if (Q.clip) T.libAction('reveal', Q.clip.path); };
 
-// replace the original with the trimmed clip (asks first; Shift skips)
+// replace the original with the trimmed clip (asks first)
 async function replaceOriginal() {
   if (!Q.loaded || !Q.info || Q.exporting) return;
   const trimmed = Q.tin > 0.01 || Q.tout < Q.dur - 0.01;
   if (!trimmed) { done({ title: 'Nothing to replace', detail: 'Trim the clip first.', cls: 'err', ms: 5000 }); return; }
   pause();
-  if (!shiftHeld && !(await confirmBox({
+  if (!(await confirmBox({
     title: 'Replace the original?',
-    body: `The original video will be permanently deleted. The trimmed clip (${fmtLen(Q.tout - Q.tin)}) takes its place with the same file name, date and audio tracks. Hold Shift to skip this.`,
+    body: `The original video will be permanently deleted. The trimmed clip (${fmtLen(Q.tout - Q.tin)}) takes its place with the same file name, date and audio tracks.`,
     ok: 'Replace',
   }))) return;
   const tab = Q.loaded, c = Q.clip;

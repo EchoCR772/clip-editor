@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, net, screen, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { spawn, execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 
@@ -1294,12 +1295,16 @@ ipcMain.on('drag-ready', (e, p) => {
   const have = allowed(p) && dragFiles.get(editKey(p));
   e.returnValue = have && have.sig === dragSig(p) && fs.existsSync(have.out) ? have.out : null;
 });
-ipcMain.on('drag-start', async (e, p, file) => {
+ipcMain.on('drag-start', async (e, p, file, picture) => {
   // the clip itself (untouched, no name), or the file made for it
   const have = dragFiles.get(editKey(p));
   if (!allowed(p) || !fs.existsSync(file) || !(samePath(file, p) || (have && have.out === file))) return;
   let icon = null;
-  try {
+  // the card-like picture the window drew (at 2x, so it's sharp on high-DPI screens)
+  if (typeof picture === 'string' && /^data:image\/png;base64,/.test(picture) && picture.length < 3e6) {
+    try { const img = nativeImage.createEmpty(); img.addRepresentation({ scaleFactor: 2, dataURL: picture }); if (!img.isEmpty()) icon = img; } catch (err) { icon = null; }
+  }
+  if (!icon) try {
     const st = fs.statSync(p);
     const t = path.join(thumbDir(), thumbKey(p, st) + '.jpg');
     if (fs.existsSync(t)) icon = nativeImage.createFromPath(t).resize({ width: 96 });
@@ -1364,7 +1369,7 @@ ipcMain.handle('lib-add-folder-path', wrap(async (_e, p) => {
   const cur = await libFolders();
   if (cur.some(f => samePath(f.path, p))) return { changed: false, already: true };
   await setFolders([...cur.filter(f => f.kind !== 'trimmed').map(f => f.path), p]);
-  return { changed: true };
+  return { changed: true, added: p };
 }));
 
 ipcMain.handle('lib-scan', wrap(async () => {
@@ -1437,20 +1442,24 @@ async function trashAll(list) {
   }
   return { trashed: done, failed };
 }
-// The app asks first with its own confirmation; `confirmed` skips Windows' dialog then.
+// Settings > Deleting: 'recycle' (default) moves clips and game folders to the Recycle Bin,
+// 'delete' removes them for good. The app always asks first with its own confirmation.
+const deleteMode = () => (readSettings().deleteMode === 'delete' ? 'delete' : 'recycle');
+async function deleteAll(list) {
+  if (deleteMode() === 'recycle') return trashAll(list);
+  closeUnusedFds();
+  const done = [], failed = [];
+  for (const p of list) {
+    try { fs.rmSync(p, { recursive: true }); done.push(p); } catch (e) { failed.push(path.basename(p) + ': ' + (e.code === 'EBUSY' || e.code === 'EPERM' ? 'another app is using it' : e.message || e)); }
+  }
+  return { trashed: done, failed, permanent: true };
+}
 ipcMain.handle('lib-trash', wrap(async (_e, paths, confirmed) => {
-  const list = (Array.isArray(paths) ? paths : [paths]).filter(p => inLibrary(p) && fs.existsSync(p));
+  const list = (Array.isArray(paths) ? paths : [paths]).filter(p => inLibrary(p) && fs.existsSync(p) && fs.statSync(p).isFile());
   if (!list.length) throw new Error("Those clips aren't there anymore.");
   if (list.some(p => qtFiles.has(editKey(p)))) throw new Error('One of them is open. Close it first.');
-  const bytes = list.reduce((s, p) => { try { return s + fs.statSync(p).size; } catch (e) { return s; } }, 0);
-  if (confirmed) return trashAll(list);
-  const r = await dialog.showMessageBox(win, {
-    type: 'warning', title: 'Delete clips', buttons: ['Move to Recycle Bin', 'Cancel'], defaultId: 1, cancelId: 1,
-    message: list.length === 1 ? `Move "${path.basename(list[0])}" to the Recycle Bin?` : `Move ${list.length} clips to the Recycle Bin?`,
-    detail: `${fmtMB(bytes)}. You can restore ${list.length === 1 ? 'it' : 'them'} from the Recycle Bin.`,
-  });
-  if (r.response !== 0) return { cancelled: true };
-  return trashAll(list);
+  if (!confirmed) return { cancelled: true };
+  return deleteAll(list);
 }));
 // a game's folder(s), e.g. "Peak" and "peak.exe" - only folders inside a clips folder, never
 // the clips folder itself
@@ -1460,20 +1469,11 @@ ipcMain.handle('lib-folder-stats', wrap(async (_e, dirs) => {
   return { ...st, folders: list.length };
 }));
 ipcMain.handle('lib-trash-folders', wrap(async (_e, dirs, label, confirmed) => {
-  const list = (Array.isArray(dirs) ? dirs : []).filter(d => inLibrary(d) && isDir(d));
+  const list = (Array.isArray(dirs) ? dirs : []).filter(d => inLibrary(d) && isDir(d)); // never a clips folder itself (inLibrary)
   if (!list.length) throw new Error("That folder isn't there anymore.");
   if (list.some(openIn)) throw new Error('A clip from that folder is open. Close it first.');
-  const st = list.map(folderStats).reduce((a, b) => ({ videos: a.videos + b.videos, other: a.other + b.other, bytes: a.bytes + b.bytes }));
-  if (confirmed) return trashAll(list);
-  const parts = [`${st.videos} video${st.videos === 1 ? '' : 's'}`];
-  if (st.other) parts.push(`${st.other} other file${st.other === 1 ? '' : 's'} (screenshots and such)`);
-  const r = await dialog.showMessageBox(win, {
-    type: 'warning', title: 'Delete folder', buttons: ['Move to Recycle Bin', 'Cancel'], defaultId: 1, cancelId: 1,
-    message: `Move the ${label || path.basename(list[0])} folder${list.length > 1 ? 's' : ''} to the Recycle Bin?`,
-    detail: `${list.join('\n')}\n\n${parts.join(' and ')}, ${fmtMB(st.bytes)}. You can restore it from the Recycle Bin.`,
-  });
-  if (r.response !== 0) return { cancelled: true };
-  return trashAll(list);
+  if (!confirmed) return { cancelled: true };
+  return deleteAll(list);
 }));
 // NVIDIA makes a folder for every game it sees, clips or not
 async function emptyFolders() {
@@ -1483,7 +1483,7 @@ async function emptyFolders() {
     let ents = [];
     try { ents = fs.readdirSync(f.path, { withFileTypes: true }); } catch (e) { continue; }
     for (const e of ents) {
-      if (!e.isDirectory()) continue;
+      if (!e.isDirectory() || e.name.startsWith('.')) continue; // other apps' (and our) hidden folders
       const full = path.join(f.path, e.name), st = folderStats(full);
       if (!st.videos && !st.other) out.push(full);
     }
@@ -1491,17 +1491,26 @@ async function emptyFolders() {
   return out;
 }
 ipcMain.handle('lib-empty-folders', wrap(async () => ({ folders: await emptyFolders() })));
+// Deletes a folder only if it holds nothing but (empty) folders; any file inside stops it untouched.
+function removeEmptyTree(dir) {
+  const walk = d => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.isSymbolicLink()) throw new Error('not empty');
+      walk(path.join(d, e.name));
+    }
+  };
+  walk(dir); // checks the whole tree first, so nothing is half deleted
+  const rm = d => { for (const e of fs.readdirSync(d)) rm(path.join(d, e)); fs.rmdirSync(d); };
+  rm(dir);
+}
 ipcMain.handle('lib-trash-empty', wrap(async (_e, confirmed) => {
   const list = await emptyFolders();
-  if (!list.length) return { trashed: [], failed: [] };
-  if (confirmed) return trashAll(list);
-  const r = await dialog.showMessageBox(win, {
-    type: 'question', title: 'Clean up', buttons: ['Move to Recycle Bin', 'Cancel'], defaultId: 0, cancelId: 1,
-    message: `Move ${list.length} empty folder${list.length === 1 ? '' : 's'} to the Recycle Bin?`,
-    detail: list.map(p => path.basename(p)).join(', ') + '\n\nThey have no files in them. NVIDIA makes them again if you record that game.',
-  });
-  if (r.response !== 0) return { cancelled: true };
-  return trashAll(list);
+  if (!list.length || !confirmed) return { deleted: [], failed: [] };
+  const deleted = [], failed = [];
+  for (const p of list) {
+    try { removeEmptyTree(p); deleted.push(p); } catch (e) { failed.push(path.basename(p)); }
+  }
+  return { deleted, failed };
 }));
 
 ipcMain.handle('lib-add-folder', wrap(async () => {
@@ -1513,7 +1522,7 @@ ipcMain.handle('lib-add-folder', wrap(async () => {
   const p = r.filePaths[0];
   if (cur.some(f => samePath(f.path, p))) return { changed: false };
   await setFolders([...cur.map(f => f.path), p]);
-  return { changed: true };
+  return { changed: true, added: p };
 }));
 ipcMain.handle('lib-remove-folder', wrap(async (_e, p) => {
   const cur = await libFolders();
@@ -1549,6 +1558,8 @@ async function moveFile(from, to) {
   fs.unlinkSync(from);
 }
 ipcMain.on('app-name', e => { e.returnValue = APP_NAME; });
+// running from source (the test copy) rather than the installed app
+ipcMain.on('is-test', e => { e.returnValue = !app.isPackaged; });
 // zoom and full screen (the app has no native menu, so these come from its own menu and keys)
 ipcMain.handle('win', (_e, what) => {
   if (!win || win.isDestroyed()) return null;
@@ -1604,7 +1615,7 @@ ipcMain.handle('settings-get', wrap(async () => {
     discordIdDetected: s.discordId || null, discordIdManual: s.discordIdManual || null,
     folders: await libFolders(), detected: await detectedFolders(), custom: Array.isArray(s.folders),
     cache: dirSize(thumbDir()),
-    updateMode: updateMode(), updates: !!updater,
+    updateMode: updateMode(), updates: !!updater, deleteMode: deleteMode(),
   };
 }));
 ipcMain.handle('settings-set', wrap(async (_e, patch) => {
@@ -1615,6 +1626,7 @@ ipcMain.handle('settings-set', wrap(async (_e, patch) => {
     if (v) s.discordIdManual = v; else delete s.discordIdManual;
   }
   if (patch && UPDATE_MODES.includes(patch.updateMode)) s.updateMode = patch.updateMode;
+  if (patch && ['recycle', 'delete'].includes(patch.deleteMode)) s.deleteMode = patch.deleteMode;
   writeSettings(s);
   if (patch && patch.updateMode) {
     sendUpdate();
@@ -1721,6 +1733,97 @@ ipcMain.handle('changelog', wrap(async () => {
     .map(x => ({ version: String(x.tag_name || '').replace(/^v/, ''), date: x.published_at, notes: x.body || '' }));
   changelogCache = { at: Date.now(), list };
   return { releases: list };
+}));
+
+// ---------- recording software reports (optional, always shown before sending) ----------
+// For a clips folder the app doesn't detect by itself (OBS, SteelSeries, Medal...), the user can send
+// how that software lays out its clips, so a later version can find it for everyone. Nothing is
+// sent without the user seeing the exact text and clicking Send. The Windows username is replaced.
+const REPORT_FORM = process.env.CLIP_TRIMMER_REPORT_URL || 'https://docs.google.com/forms/d/e/1FAIpQLScXgarClsZdY4vVdcAi2160pKXV9XZzN8lRwkUGNWuuLeFmUA/formResponse';
+const REPORT_FIELDS = { recorder: 'entry.1525447683', version: 'entry.388380471', report: 'entry.1049009954' };
+const RECORDERS = [
+  [/steelseries|moments/i, 'SteelSeries Moments'], [/\bobs\b|obs[- ]studio/i, 'OBS Studio'], [/medal/i, 'Medal'],
+  [/outplayed|overwolf/i, 'Outplayed (Overwolf)'], [/radeon|relive|\bamd\b/i, 'AMD Adrenalin'], [/captures/i, 'Xbox Game Bar'],
+  [/shadowplay|nvidia/i, 'NVIDIA'], [/steam/i, 'Steam'], [/bandicam/i, 'Bandicam'], [/insights|plays\.tv/i, 'Insights Capture'],
+];
+function anonymize(text) {
+  let t = String(text);
+  const home = os.homedir(), user = (() => { try { return os.userInfo().username; } catch (e) { return ''; } })();
+  const esc = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (home) t = t.replace(new RegExp(esc(home), 'gi'), '%USERPROFILE%');
+  if (user && user.length >= 2) t = t.replace(new RegExp(esc(user), 'gi'), '%USERNAME%');
+  return t;
+}
+async function buildReport(dir) {
+  if (!isDir(dir)) throw new Error("That folder isn't there.");
+  const videos = [], others = new Set(), subdirsWithVideos = new Set();
+  const walk = (d, depth) => {
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      if (e.name.startsWith('.')) continue;
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) { if (depth < 3) walk(full, depth + 1); continue; }
+      const ext = path.extname(e.name).slice(1).toLowerCase();
+      if (VIDEO_EXT.includes(ext)) {
+        let mtime = 0; try { mtime = fs.statSync(full).mtimeMs; } catch (er) { /* skip */ }
+        videos.push({ full, rel: path.relative(dir, full), depth, mtime });
+        if (depth > 0) subdirsWithVideos.add(path.relative(dir, full).split(path.sep)[0]);
+      } else if (ext) others.add(ext);
+    }
+  };
+  walk(dir, 0);
+  if (!videos.length) throw new Error('There are no videos in that folder yet. Save a clip with it first.');
+  videos.sort((a, b) => b.mtime - a.mtime);
+  const atRoot = videos.filter(v => v.depth === 0).length;
+  const layout = !subdirsWithVideos.size ? 'all videos directly in the folder'
+    : atRoot ? 'some videos in subfolders, some directly in the folder' : `a subfolder per game (${subdirsWithVideos.size} subfolders)`;
+  const lines = [
+    `Folder: ${anonymize(dir)}`,
+    `Layout: ${layout}`,
+    `Videos: ${videos.length} (${[...new Set(videos.map(v => path.extname(v.full).slice(1).toLowerCase()))].join(', ')})`,
+    'Example file names:',
+    ...videos.slice(0, 3).map(v => '  ' + anonymize(v.rel)),
+    `Other file types: ${others.size ? [...others].slice(0, 10).join(', ') : 'none'}`,
+  ];
+  try {
+    const i = await ffInfo(videos[0].full);
+    const v = i.video || '';
+    const res = (v.match(/(\d{2,5}x\d{2,5})/) || [])[1] || '?', fps = (v.match(/([\d.]+) fps/) || [])[1];
+    lines.push(`Newest video: ${(v.match(/^(\w+)/) || [])[1] || '?'}, ${res}${fps ? `, ${fps} fps` : ''}, ${Math.round(i.duration)} s`);
+    lines.push(`Audio tracks: ${i.audio.length || 'none'}`);
+    i.audio.forEach((t, n) => lines.push(`  ${n + 1}. ${[t.codec, t.channels, anonymize(t.title || t.handler || '')].filter(Boolean).join(', ')}`));
+  } catch (e) { lines.push("Newest video: couldn't be read"); }
+  const guess = (RECORDERS.find(([re]) => re.test(dir)) || [])[1] || '';
+  return { recorder: guess, version: app.getVersion(), text: lines.join('\n') };
+}
+ipcMain.handle('report-build', wrap(async (_e, dir) => buildReport(cleanPath(dir))));
+ipcMain.handle('report-send', wrap(async (_e, dir, recorder, text) => {
+  // send exactly what was shown (re-anonymized in case it was edited)
+  const body = new URLSearchParams({
+    [REPORT_FIELDS.recorder]: anonymize(String(recorder || '').slice(0, 100)) || 'Unknown',
+    [REPORT_FIELDS.version]: app.getVersion(),
+    [REPORT_FIELDS.report]: anonymize(String(text || '').slice(0, 20000)),
+  });
+  const r = await net.fetch(REPORT_FORM, { method: 'POST', body: body.toString(), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: AbortSignal.timeout(15000) });
+  if (!r.ok) throw new Error(`Couldn't send it (${r.status}). Try again later.`);
+  const s = readSettings();
+  s.reportedFolders = [...new Set([...(s.reportedFolders || []), cleanPath(dir)])];
+  writeSettings(s);
+  return {};
+}));
+// the little "help add this" card: shown once per folder, until sent or closed
+ipcMain.handle('report-card', wrap(async (_e, dir, action) => {
+  const s = readSettings(), key = cleanPath(dir);
+  const seen = [...(s.reportedFolders || []), ...(s.reportDismissed || [])].some(p => samePath(p, key));
+  if (action === 'dismiss') { s.reportDismissed = [...new Set([...(s.reportDismissed || []), key])]; writeSettings(s); return {}; }
+  return { show: !seen, reported: (s.reportedFolders || []).some(p => samePath(p, key)) };
+}));
+ipcMain.handle('report-folders', wrap(async () => {
+  const s = readSettings();
+  const list = (await libFolders()).filter(f => f.kind === 'folder' && !f.missing)
+    .map(f => ({ path: f.path, reported: (s.reportedFolders || []).some(p => samePath(p, f.path)), guess: (RECORDERS.find(([re]) => re.test(f.path)) || [])[1] || '' }));
+  return { folders: list };
 }));
 
 // ---------- window / lifecycle ----------

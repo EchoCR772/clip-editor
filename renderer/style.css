@@ -180,8 +180,6 @@ body.resizing *{user-select:none}
 #libgrid.selecting .clip:hover .cbottom{transform:translateY(52px)}
 .ctitle{font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 3px rgba(0,0,0,.7);margin-bottom:4px}
 .csubrow{display:flex;align-items:center;gap:10px;height:18px;overflow:hidden;transition:opacity .2s ease,height .28s var(--ease),margin .28s var(--ease)}
-.clip:hover .csubrow{opacity:0;height:0}
-#libgrid.selecting .clip:hover .csubrow{opacity:1;height:18px}
 .csub{flex:1;min-width:0;font-size:12px;color:#c7c6ca;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cdur{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;text-shadow:0 1px 3px rgba(0,0,0,.7)}
 .hbar{display:flex;flex-direction:column;gap:6px;height:52px;padding-top:4px;opacity:0;transition:opacity .22s ease}
@@ -190,7 +188,6 @@ body.resizing *{user-select:none}
 
 /* keep the hover controls up while the seek bar is held, even if the mouse drifts off the card */
 .clip.scrubbing .cbottom{transform:none}
-.clip.scrubbing .csubrow{opacity:0;height:0}
 .clip.scrubbing .hbar,.clip.scrubbing .cact{opacity:1}
 .clip.scrubbing .trk .fill::after{transform:scale(1.25)}
 .trk .fill::after{transition:transform .12s ease}
@@ -735,3 +732,50 @@ button:focus-visible,.clip:focus-visible{outline:2px solid var(--acc);outline-of
 .fplus .ico{width:15px;height:15px}
 .fadd:hover .fplus{background:#23a55a;color:#fff}
 .tb-upd:focus{outline:none}
+
+/* "help add this recording software" card, beside the new folder's row */
+.rcard{position:fixed;z-index:40;width:290px;background:#1a191c;border:1px solid #2e2d33;border-radius:10px;padding:12px 14px 12px;box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;transform:translateX(-6px);transition:opacity .2s ease,transform .2s ease;pointer-events:none}
+.rcard.on{opacity:1;transform:none;pointer-events:auto}
+.rcard::before{content:'';position:absolute;left:-6px;top:22px;width:10px;height:10px;background:#1a191c;border-left:1px solid #2e2d33;border-bottom:1px solid #2e2d33;transform:rotate(45deg)}
+.rc-title{font-size:13.5px;font-weight:600;color:#fff;margin:0 22px 4px 0}
+.rc-text{font-size:12.5px;line-height:1.4;color:var(--mute)}
+.rc-btns{display:flex;justify-content:flex-end;margin-top:10px}
+.rc-x{position:absolute;right:8px;top:8px;width:24px;height:24px;border:0;border-radius:5px;background:transparent;color:var(--dim);display:flex;align-items:center;justify-content:center;cursor:pointer}
+.rc-x:hover{background:#2a292e;color:#fff}
+.rc-x .ico{width:15px;height:15px}
+/* the report preview */
+.modal.report .modal-body{margin-bottom:18px;max-height:60vh}
+.report-label{font-size:12px;font-weight:600;color:var(--text);margin:12px 0 6px;text-transform:uppercase;letter-spacing:.03em}
+.report-pre{margin:0;background:#111013;border:1px solid #26252b;border-radius:8px;padding:10px 12px;font:12px/1.45 Consolas,'Cascadia Mono',monospace;color:#c9c8cd;white-space:pre-wrap;word-break:break-all;user-select:text;max-height:240px;overflow:auto}
+.report-note{font-size:12.5px;color:var(--dim);margin:10px 0 0 !important}
+.modal.report .modal-in{margin:0}
+
+/* the test copy */
+.tb-test{flex:none;align-self:center;margin-left:6px;padding:3px 8px;border-radius:6px;background:rgba(250,166,26,.16);color:#f0b232;font-size:11.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;-webkit-app-region:drag}
+.tb-test[hidden]{display:none}
+
+/* the file name under the details line; title, details and file name stay visible on hover */
+.cfile{font-size:11.5px;color:#8f8e94;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:16px;margin-top:1px;text-shadow:0 1px 3px rgba(0,0,0,.7);transition:opacity .2s ease,height .28s var(--ease),margin .28s var(--ease)}
+
+/* collapsed sidebar: every picture stays exactly where it is in the open sidebar (same rows, same
+   spacing, same left edge); only the names go. The GAMES heading keeps its space as a short line. */
+#libside.collapsed #sidehead{padding:12px 0 6px 16px;justify-content:flex-start;min-height:54px}
+#libside.collapsed #sidetoggle{padding:6px 11.5px}
+#libside.collapsed #folderbox{padding:0 0 4px 16px;justify-content:flex-start}
+#libside.collapsed #folderbtn{width:48px;height:36px}
+#libside.collapsed #games{padding:4px 8px 12px}
+#libside.collapsed .game{justify-content:flex-start;padding:8px;margin:0;border-radius:8px}
+#libside.collapsed .gsec+.game,#libside.collapsed .game+.gsec{margin-top:0}
+#libside.collapsed .gsec{display:block;position:relative;color:transparent;white-space:nowrap;overflow:hidden;padding:16px 10px 6px}
+#libside.collapsed .gsec::after{content:'';position:absolute;left:12px;width:40px;top:50%;height:1px;background:#2a292e;margin-top:5px}
+
+/* All clips and the line under it stay put; only the games scroll (same layout open or collapsed,
+   so the pictures don't move) */
+#sidefixed{flex:none;padding:4px 8px 0}
+#sidefixed+#games,#libside.collapsed #sidefixed+#games{padding-top:0}
+.gdiv{height:1px;background:#2a292e;margin:8px 8px}
+#libside.collapsed .gdiv{margin:8px 8px;width:48px}
+
+/* the card being dragged out of the app lifts away and stays faded until the drag ends */
+.clip{transition:border-color .2s,box-shadow .2s,transform .18s var(--ease),opacity .18s ease}
+.clip.lifted{transform:scale(.96);opacity:.45}

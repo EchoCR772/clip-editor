@@ -109,10 +109,7 @@ async function openDropped(p) {
   const kind = await T.pathKind(p);
   if (kind === 'dir') {
     if (!(await confirmBox({ title: 'Add this folder?', body: `Clips in ${p} will show up in your library. Nothing is moved or changed.`, ok: 'Add folder', danger: false }))) return;
-    const r = await T.libAddFolderPath(p);
-    if (!r.ok) return libToast(r.error, 'err');
-    libToast(r.already ? 'That folder is already in your library.' : 'Folder added.');
-    if (r.changed) { L.dirty = true; loadLibrary(); }
+    await folderAdded(await T.libAddFolderPath(p));
     return;
   }
   openResult(await T.openPath(p));
