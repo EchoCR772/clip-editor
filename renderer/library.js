@@ -111,7 +111,7 @@ function aboutBox() {
   const link = (text, url) => { const a = h('button', 'linkbtn', text); a.onclick = () => T.openUrl(url); return a; };
   const p = (...kids) => { const e = h('p'); e.append(...kids); return e; };
   infoBox(`${T.appName} ${appVersion}`, [
-    p('Trim and share your NVIDIA and Discord clips. Made by Cristian Rivera.'),
+    p('Trim and share your NVIDIA and Discord clips. Made by EchoCR772.'),
     p(link('github.com/EchoCR772/clip-editor', 'https://github.com/EchoCR772/clip-editor')),
     h('h3', '', 'Open-source parts'),
     p('FFmpeg (GPL v3), used to read and make videos. Source: ', link('ffmpeg.org', 'https://ffmpeg.org/download.html'), ', build: ', link('ffmpeg-static', 'https://github.com/eugeneware/ffmpeg-static')),

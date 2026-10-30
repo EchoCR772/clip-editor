@@ -1,10 +1,10 @@
 {
   "name": "clip-editor",
   "productName": "Clip Editor",
-  "version": "1.43.2",
+  "version": "1.43.3",
   "description": "Trim and share video clips",
   "main": "main.js",
-  "author": "Cristian Rivera",
+  "author": "EchoCR772",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
