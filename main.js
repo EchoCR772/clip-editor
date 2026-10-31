@@ -145,11 +145,13 @@ function ffInfo(file) {
       const s = String(stderr || '');
       const dm = s.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
       const duration = dm ? (+dm[1]) * 3600 + (+dm[2]) * 60 + parseFloat(dm[3]) : 0;
-      let video = null, cur = null;
+      let video = null, cur = null, comment = '', seenStream = false;
       const audio = [];
       for (const l of s.split(/\r?\n/)) {
         const sm = l.match(/^\s*Stream #0:\d+.*?: (Video|Audio|Subtitle|Data|Attachment): (.*)$/);
+        if (!seenStream && !sm) { const cm = l.match(/^\s+comment\s*:\s*(.+?)\s*$/); if (cm) comment = cm[1]; }
         if (sm) {
+          seenStream = true;
           cur = null;
           if (sm[1] === 'Video' && !video && !/attached pic/.test(l)) video = sm[2];
           if (sm[1] === 'Audio') {
@@ -161,13 +163,13 @@ function ffInfo(file) {
         const t = cur && l.match(/^\s+(title|handler_name)\s*:\s*(.+?)\s*$/);
         if (t) cur[t[1] === 'title' ? 'title' : 'handler'] = t[2];
       }
-      resolve({ duration, video, audio });
+      resolve({ duration, video, audio, comment });
     });
   });
 }
 
 async function probeVideo(file) {
-  const { duration, video, audio } = await ffInfo(file);
+  const { duration, video, audio, comment } = await ffInfo(file);
   if (!video) throw new Error('No video stream found in that file.');
   const res = video.match(/,\s*(\d{2,5})x(\d{2,5})/);
   const f = video.match(/(\d+(?:\.\d+)?)\s*fps/) || video.match(/(\d+(?:\.\d+)?)\s*tbr/);
@@ -190,10 +192,14 @@ async function probeVideo(file) {
     const st = readSettings();
     owner = st.discordIdManual || st.discordId || users[0] || null;
   }
+  // Encore recordings: tracks named in handler_name (Full mix, Microphone, Desktop audio, one per app).
+  // Marked with comment "rec-format:N"; the track names alone also identify them (the marker is lost
+  // when a file is re-saved by another tool).
+  const encore = !discord ? encoreLayout(audio, comment) : null;
   // NVIDIA's own captures ("separate both tracks" gives game audio, then the mic)
-  const nvidia = !discord && (NV_DATE.test(path.basename(file)) || audio.some(a => /^SoundHandle$/.test(a.handler || '')));
+  const nvidia = !discord && !encore && (NV_DATE.test(path.basename(file)) || audio.some(a => /^SoundHandle$/.test(a.handler || '')));
   return {
-    discord, owner, users, nvidia, videoLine: video,
+    discord, owner, users, nvidia, encore, videoLine: video,
     name: path.basename(file),
     url: pathToFileURL(file).href,
     codec: (video.match(/^(\w+)/) || [])[1] || '?',
@@ -334,6 +340,24 @@ function sourceKbps(info) {
 }
 
 // ---------- audio rows ----------
+// Encore's file contract (marker rec-format:N): audio tracks are named in handler_name.
+//  N=2 (Encore 0.4.1+) and files from 0.4.0: "Full mix" = everything incl. the mic, "Microphone",
+//  "Desktop audio" (system sound without the mic, only when a mic was recorded), then one per app.
+//  Older files (0.3.x, marker 1, no "Desktop audio" track): "Full mix" does NOT include the mic.
+const ENCORE_RESERVED = ['full mix', 'microphone', 'desktop audio'];
+function encoreLayout(audio, comment) {
+  if (!audio || audio.length < 2) return null;
+  const names = audio.map(a => (a.handler || '').trim().toLowerCase());
+  const m = String(comment || '').match(/rec-format:(\d+)/i);
+  if (!m && names[0] !== 'full mix') return null;
+  const format = m ? +m[1] : 1;
+  const at = n => names.indexOf(n);
+  const full = at('full mix'), mic = at('microphone'), desktop = at('desktop audio');
+  const apps = names.map((n, i) => (n && !ENCORE_RESERVED.includes(n) ? i : -1)).filter(i => i >= 0);
+  // the old layout's Full mix lacks the mic: an untouched export has to add it back
+  const old = format < 2 && mic >= 0 && desktop < 0;
+  return { format, full, mic, desktop, apps, old };
+}
 // Discord clips carry each source separately (the game/app, one voice track per person, the
 // soundboard) plus a full mix; NVIDIA's "separate tracks" recordings have the game, then the mic.
 // Each row ("group") is one or more audio tracks with its own mute and volume.
@@ -360,6 +384,15 @@ function audioGroups(info) {
     return [g('audio', 'Audio', 'speaker', [Math.max(0, a.findIndex(x => x.kind === 'all'))])];
   }
   if (a.length === 1) return [g('audio', 'Audio', 'speaker', [0])];
+  if (info.encore) {
+    // one row per track except Full mix (it already contains the rest); Desktop audio only when
+    // there are no per-app tracks. Never mixed with the others.
+    const E = info.encore, out = [];
+    if (E.mic >= 0) out.push(g('e:microphone', 'Microphone', 'mic', [E.mic]));
+    for (const i of E.apps) out.push(g('e:' + a[i].handler.trim().toLowerCase(), a[i].handler.trim(), 'speaker', [i]));
+    if (E.desktop >= 0 && !E.apps.length) out.push(g('e:desktop audio', 'Desktop audio', 'speaker', [E.desktop]));
+    return out.length ? out : [g('audio', 'Audio', 'speaker', [Math.max(0, E.full)])];
+  }
   const mic = a.map((x, i) => i).filter(i => i > 0 && (info.nvidia || /\b(mic|microphone|voice|commentary)\b/i.test(a[i].title || '') || a.length === 2));
   const game = a.map((x, i) => i).filter(i => !mic.includes(i));
   return [g('game', 'Game / Desktop', 'gamepad', game), g('voice', 'Microphone', 'mic', mic)].filter(x => x.idx.length);
@@ -374,6 +407,11 @@ function sourcesFor(info, audio) {
   const groups = audioGroups(info).map(g => ({ ...g, ...savedFor(g, audio) }));
   const untouched = groups.every(g => !g.mute && Math.abs(g.vol - 1) < 0.001);
   if (info.discord && untouched) { const all = (info.audio || []).findIndex(x => x.kind === 'all'); if (all >= 0) return [{ index: all, gain: 1 }]; }
+  // an untouched Encore clip keeps its own Full mix (plus the mic for files whose Full mix lacks it)
+  if (info.encore && untouched && info.encore.full >= 0) {
+    const E = info.encore;
+    return [{ index: E.full, gain: 1 }, ...(E.old ? [{ index: E.mic, gain: 1 }] : [])];
+  }
   return groups.filter(g => !g.mute && g.vol > 0.001).flatMap(g => g.idx.map(i => ({ index: i, gain: g.vol })));
 }
 
