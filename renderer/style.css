@@ -687,7 +687,7 @@ button:focus-visible,.clip:focus-visible{outline:2px solid var(--acc);outline-of
 .modal .keys{display:grid;grid-template-columns:auto 1fr;gap:9px 16px;align-items:center;font-size:14px;color:var(--mute)}
 .modal .keys kbd{justify-self:start;font-size:12px;padding:2px 7px}
 .keysep{height:4px}
-/* the app menu (Spotify/Claude style): text only, shortcuts on the right */
+/* the app menu (Spotify style): text only, shortcuts on the right */
 #ctxmenu[data-for=appmenu]{min-width:150px}
 #ctxmenu[data-for=appmenu] button,#ctxsub button{padding:8px 10px 8px 14px;font-size:13.5px}
 #ctxsub{min-width:250px;padding:6px}

@@ -1720,12 +1720,12 @@ ipcMain.handle('whats-new', () => {
 });
 // The changelog: every published release's notes (Markdown) from GitHub, newest first.
 // Kept for 10 minutes; on failure the caller falls back to the notes the updater brought.
+const RELEASES_REPO = 'EchoCR772/clip-editor';
 let changelogCache = null;
 ipcMain.handle('changelog', wrap(async () => {
   if (changelogCache && Date.now() - changelogCache.at < 10 * 60 * 1000) return { releases: changelogCache.list };
-  const pub = ((require('./package.json').build || {}).publish || [])[0] || {};
-  if (!pub.owner || !pub.repo) throw new Error('No release page set up.');
-  const r = await net.fetch(`https://api.github.com/repos/${pub.owner}/${pub.repo}/releases?per_page=50`, {
+  // package.json's "build" section is stripped from the installed app, so the repo is named here
+  const r = await net.fetch(`https://api.github.com/repos/${RELEASES_REPO}/releases?per_page=50`, {
     headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Clip-Editor' }, signal: AbortSignal.timeout(8000),
   });
   if (!r.ok) throw new Error(`GitHub said ${r.status}.`);

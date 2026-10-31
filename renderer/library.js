@@ -236,7 +236,7 @@ function shortcutsBox() {
   x.onclick = done;
   ov.addEventListener('pointerdown', e => { if (e.target === ov && e.button === 0) done(); });
 }
-// the menu at the top left (like Claude's and Discord's): opening videos, folders, settings
+// the menu at the top left (like Discord's): opening videos, folders, settings
 $('appmenu').onclick = e => {
   e.stopPropagation();
   const m = $('ctxmenu');
