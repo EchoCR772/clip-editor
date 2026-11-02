@@ -360,6 +360,8 @@ function frame() {
   $('qtcur').textContent = fmt(Q.t);
   $('qtlen').textContent = fmt(Q.tout - Q.tin);
   $('qtof').textContent = ` of ${fmt(Q.dur)}`;
+  const whole = Q.tin <= 0.01 && Q.tout >= Q.dur - 0.01, sz = Q.info && Q.info.size;
+  $('qtsize').textContent = sz ? (whole ? `Size ${fmtSize(sz)}` : `Size ≈ ${fmtSize(estSize(sz, Q.tout - Q.tin, Q.dur))} (from ${fmtSize(sz)})`) : '';
   if (document.activeElement !== $('qtin')) $('qtin').value = fmt(Q.tin);
   if (document.activeElement !== $('qtout')) $('qtout').value = fmt(Q.tout);
   $('qtreset').disabled = !(Q.tin > 0.01 || Q.tout < Q.dur - 0.01);

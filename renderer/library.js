@@ -36,6 +36,7 @@ const KIND_BADGE = { discord: 'Clip', replay: 'Instant Replay', recording: 'Reco
 const SRC_LOOK = {
   nvidia: { label: 'NVIDIA', icon: 'gamepad', color: '#1e1e1e', img: 'img/nvidia.png' },
   discord: { label: 'Discord', icon: 'chat', color: '#1e1e1e', img: 'img/discord.png' },
+  encore: { label: 'Encore', icon: 'gamepad', color: '#1e1e1e', img: 'img/encore.png' },
   folder: { label: '', icon: 'folder', color: '#2e2d31' },
   trimmed: { label: 'Trimmed', icon: 'scissors', color: '#1f8b4c' },
 };
@@ -993,7 +994,9 @@ function refreshCard(el, c) {
   el._clip = c;
   el.querySelector('.ctitle').textContent = clipTitle(c);
   el.querySelector('.ctitle').title = c.name;
-  const sub = [L.game === 'all' ? c.gameName : '', c.sub, fmtSize(c.size)].filter(Boolean).join('  ·  ');
+  // an edited clip shows the size it will have when dragged, copied or exported
+  const tr = trimOf(c), sz = tr ? '≈ ' + fmtSize(estSize(c.size, tr.b - tr.a, c.duration || (c.edit && c.edit.dur))) : fmtSize(c.size);
+  const sub = [L.game === 'all' ? c.gameName : '', c.sub, sz].filter(Boolean).join('  ·  ');
   el.querySelector('.csub').textContent = sub;
   el.querySelector('.cfile').textContent = c.name;
   setLength(el.querySelector('.cdur'), c);

@@ -727,6 +727,9 @@ function discordBoxWithLength(box, ms) {
 
 const LIB_EXT = new Set(['mp4', 'mkv', 'mov', 'webm', 'm4v']);
 const NV_DATE = /(\d{4})\.(\d{2})\.(\d{2}) - (\d{2})\.(\d{2})\.(\d{2})/; // "Game 2026.10.27 - 15.36.33.06.DVR.mp4"
+// NVIDIA's names always end the time with hundredths ("15.36.33.06"); Encore's don't ("Desktop 2026.10.31 - 21.26.52.mp4")
+const NV_HUNDREDTHS = /\d{4}\.\d{2}\.\d{2} - \d{2}\.\d{2}\.\d{2}\.\d{2}/;
+const looksEncore = n => NV_DATE.test(n) && !NV_HUNDREDTHS.test(n) && !/\.DVR(_trim\d*)?\.\w+$/i.test(n);
 // "Destiny_2_<uuid>.mp4", or newer "Battlefield_6_1426258143645532160.mp4"
 const DISCORD_NAME = /^(.*)_(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{17,20})(?=\.\w+$|_trim)/i;
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
@@ -747,6 +750,17 @@ function nvidiaFolder() {
         resolve(nvidiaRoot);
       });
   });
+}
+
+// Encore (the recorder made to pair with this app) keeps its save folder in its own settings file
+function encoreFolder() {
+  if (!IS_WIN) return null;
+  try {
+    const p = JSON.parse(fs.readFileSync(path.join(app.getPath('appData'), 'Encore', 'settings.json'), 'utf8').replace(/^\uFEFF/, '')).output_dir;
+    if (typeof p === 'string' && p.trim() && isDir(p.trim())) return p.trim();
+  } catch (e) { /* not installed */ }
+  const d = path.join(app.getPath('videos'), 'Encore');
+  return isDir(d) ? d : null;
 }
 
 // Discord keeps its clip folder setting in its own database, but its clip logs say where each
@@ -823,17 +837,23 @@ async function libFolders() {
     if (process.env.CLIP_TRIMMER_EXPORTS && isDir(ex)) l.push({ path: ex, kind: 'trimmed' });
     return l;
   }
-  const nv = await nvidiaFolder(), dc = discordFolder(), ex = await exportDir();
-  const kindOf = p => (nv && samePath(p, nv) ? 'nvidia' : dc && samePath(p, dc) ? 'discord' : 'folder');
+  const nv = await nvidiaFolder(), dc = discordFolder(), enc = encoreFolder(), ex = await exportDir();
+  const kindOf = p => (nv && samePath(p, nv) ? 'nvidia' : dc && samePath(p, dc) ? 'discord' : enc && samePath(p, enc) ? 'encore' : 'folder');
   const s = readSettings();
-  const list = (Array.isArray(s.folders) ? s.folders : [nv, dc].filter(Boolean)).filter(p => typeof p === 'string' && !samePath(p, ex));
+  // a saved folder list has never seen Encore: add it once (taking it out later sticks)
+  if (enc && !(s.encoreSeen && samePath(s.encoreSeen, enc))) {
+    if (Array.isArray(s.folders) && !s.folders.some(p => samePath(p, enc))) s.folders = [...s.folders, enc];
+    s.encoreSeen = enc;
+    writeSettings(s);
+  }
+  const list = (Array.isArray(s.folders) ? s.folders : [nv, dc, enc].filter(Boolean)).filter(p => typeof p === 'string' && !samePath(p, ex));
   const out = list.map(p => ({ path: p, kind: kindOf(p), missing: !isDir(p) }));
   // the trimmed-clips folder is always part of the library once something has been exported
   if (isDir(ex)) out.push({ path: ex, kind: 'trimmed' });
   return out;
 }
 async function detectedFolders() {
-  return [await nvidiaFolder(), discordFolder()].filter(Boolean);
+  return [await nvidiaFolder(), discordFolder(), encoreFolder()].filter(Boolean);
 }
 
 // Some Discord clips store names with the bytes of "®", "™" etc. read the wrong way
@@ -888,9 +908,10 @@ function clipKind(name, meta) {
   return 'other';
 }
 
-// Discord or NVIDIA - also for trims, whose names keep the original's
+// Discord, NVIDIA or Encore - also for trims, whose names keep the original's
 function clipOrigin(name, meta, kind) {
   if (kind === 'discord' || meta || DISCORD_NAME.test(name)) return 'discord';
+  if (kind === 'encore' || (kind !== 'nvidia' && looksEncore(name))) return 'encore';
   if (kind === 'nvidia' || NV_DATE.test(name) || /\.DVR(_trim\d*)?\.\w+$/i.test(name)) return 'nvidia';
   return null;
 }
@@ -1941,7 +1962,11 @@ if (engineTest) { /* the test sets up its own window */ } else if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', async (_e, argv) => {
-    if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      // Windows often refuses to raise a window for another program's launch: pin it on top for a moment
+      win.setAlwaysOnTop(true); win.show(); win.focus(); win.setAlwaysOnTop(false);
+    }
     const f = argvFile(argv);
     if (f) openInWindow(f);
   });

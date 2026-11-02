@@ -73,6 +73,8 @@ const parse = s => {
   return p.reduce((a, x) => a * 60 + x, 0);
 };
 const fmtSize = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + ' GB' : (b / 1048576).toFixed(1) + ' MB';
+// size of the kept part of a clip: exports keep the source's bitrate, so it grows with the length
+const estSize = (size, keep, dur) => (dur > 0 ? size * Math.min(1, Math.max(0, keep) / dur) : size);
 const clamp = (t, a, b) => Math.min(b, Math.max(a, t));
 
 // ---------- listening volume ----------
